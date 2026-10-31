@@ -48,6 +48,7 @@ from ._constants import (
     ZoneType,
 )
 from ._meta import WriterMeta
+from ._utils import public_dir
 
 if TYPE_CHECKING:
     from ._reader import TecplotPolyZoneReader
@@ -1593,6 +1594,10 @@ class TecplotWriter(ABC):
     @abstractmethod
     def _file_format(self) -> str:
         """Format tag for :class:`~tecio._meta.WriterMeta`, e.g. ``'szplt'``."""
+
+    def __dir__(self) -> list[str]:  # pragma: no cover
+        """List only the public attributes and methods."""
+        return public_dir(self)
 
     # -- Context manager ---------------------------------------------------------------
 

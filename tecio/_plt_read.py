@@ -1325,14 +1325,14 @@ class TecplotPltOrderedZoneReader(TecplotOrderedZoneReader):
     __slots__ = (
         "_file_path",
         "_meta",
-        "num_vars",
+        "_num_vars",
         "_var_names",
         "_byte_order",
         "_all_metas",
     )
     _file_path: str | os.PathLike
     _meta: _ZoneMeta
-    num_vars: int
+    _num_vars: int
     _var_names: list[str]
     _byte_order: str
     _all_metas: list[_ZoneMeta] | None
@@ -1361,7 +1361,7 @@ class TecplotPltOrderedZoneReader(TecplotOrderedZoneReader):
         )
         object.__setattr__(self, "_file_path", file_path)
         object.__setattr__(self, "_meta", meta)
-        object.__setattr__(self, "num_vars", num_vars)
+        object.__setattr__(self, "_num_vars", num_vars)
         object.__setattr__(self, "_var_names", var_names)
         object.__setattr__(self, "_byte_order", byte_order)
         object.__setattr__(self, "_all_metas", all_metas)
@@ -1371,7 +1371,7 @@ class TecplotPltOrderedZoneReader(TecplotOrderedZoneReader):
             self._file_path,
             self._meta,
             self.zone_index,
-            self.num_vars,
+            self._num_vars,
             self._var_names,
             self._byte_order,
             self._all_metas,
@@ -1392,14 +1392,14 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
     __slots__ = (
         "_file_path",
         "_meta",
-        "num_vars",
+        "_num_vars",
         "_var_names",
         "_byte_order",
         "_all_metas",
     )
     _file_path: str | os.PathLike
     _meta: _ZoneMeta
-    num_vars: int
+    _num_vars: int
     _var_names: list[str]
     _byte_order: str
     _all_metas: list[_ZoneMeta] | None
@@ -1433,7 +1433,7 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
         )
         object.__setattr__(self, "_file_path", file_path)
         object.__setattr__(self, "_meta", meta)
-        object.__setattr__(self, "num_vars", num_vars)
+        object.__setattr__(self, "_num_vars", num_vars)
         object.__setattr__(self, "_var_names", var_names)
         object.__setattr__(self, "_byte_order", byte_order)
         object.__setattr__(self, "_all_metas", all_metas)
@@ -1443,7 +1443,7 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
             self._file_path,
             self._meta,
             self.zone_index,
-            self.num_vars,
+            self._num_vars,
             self._var_names,
             self._byte_order,
             self._all_metas,
@@ -1524,14 +1524,14 @@ class TecplotPltPolyZoneReader(TecplotPolyZoneReader):
     __slots__ = (
         "_file_path",
         "_meta",
-        "num_vars",
+        "_num_vars",
         "_var_names",
         "_byte_order",
         "_all_metas",
     )
     _file_path: str | os.PathLike
     _meta: _ZoneMeta
-    num_vars: int
+    _num_vars: int
     _var_names: list[str]
     _byte_order: str
     _all_metas: list[_ZoneMeta] | None
@@ -1566,7 +1566,7 @@ class TecplotPltPolyZoneReader(TecplotPolyZoneReader):
         )
         object.__setattr__(self, "_file_path", file_path)
         object.__setattr__(self, "_meta", meta)
-        object.__setattr__(self, "num_vars", num_vars)
+        object.__setattr__(self, "_num_vars", num_vars)
         object.__setattr__(self, "_var_names", var_names)
         object.__setattr__(self, "_byte_order", byte_order)
         object.__setattr__(self, "_all_metas", all_metas)
@@ -1576,7 +1576,7 @@ class TecplotPltPolyZoneReader(TecplotPolyZoneReader):
             self._file_path,
             self._meta,
             self.zone_index,
-            self.num_vars,
+            self._num_vars,
             self._var_names,
             self._byte_order,
             self._all_metas,

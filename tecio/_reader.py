@@ -58,6 +58,7 @@ from ._constants import (
     ZoneType,
 )
 from ._containers import VariableList, ZoneList, select_variable_arrays
+from ._utils import public_dir
 
 # Nodes per element for the standard finite-element zone types. ORDERED zones are
 # computed from active dimensions instead, see TecplotZoneReader.nodes_per_cell.
@@ -459,6 +460,10 @@ class TecplotZoneReader(ABC):
 
     __setattr__ = _immutable_setattr
     __delattr__ = _immutable_delattr
+
+    def __dir__(self) -> list[str]:  # pragma: no cover
+        """List only the public attributes and methods."""
+        return public_dir(self)
 
     def __repr__(self) -> str:  # pragma: no cover
         title = self.title

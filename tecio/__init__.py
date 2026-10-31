@@ -156,5 +156,5 @@ _STANDARD_MODULE_ATTRIBUTES = (
 
 
 # Only public API visible to user
-def __dir__() -> list:
+def __dir__() -> list:  # pragma: no cover
     return sorted((*_STANDARD_MODULE_ATTRIBUTES, *__all__))

@@ -296,9 +296,9 @@ class TecplotSzlOrderedZoneReader(TecplotOrderedZoneReader):
     the base class. The variable list and aux data stay lazily loaded on first access.
     """
 
-    __slots__ = ("_handle", "num_vars")
+    __slots__ = ("_handle", "_num_vars")
     _handle: ctypes.c_void_p
-    num_vars: int
+    _num_vars: int
 
     def __init__(self, handle: ctypes.c_void_p, zone_index: int, num_vars: int) -> None:
         zone_num = zone_index + 1
@@ -314,7 +314,7 @@ class TecplotSzlOrderedZoneReader(TecplotOrderedZoneReader):
             k=k,
         )
         object.__setattr__(self, "_handle", handle)
-        object.__setattr__(self, "num_vars", num_vars)
+        object.__setattr__(self, "_num_vars", num_vars)
 
     def is_enabled(self) -> bool:
         """True if the zone is enabled (queried live).
@@ -325,7 +325,7 @@ class TecplotSzlOrderedZoneReader(TecplotOrderedZoneReader):
         return _szl_zone_is_enabled(self._handle, self.zone_index)
 
     def _load_variables(self) -> list[TecplotVariableReader]:
-        return _load_szl_variables(self._handle, self.zone_index, self.num_vars)
+        return _load_szl_variables(self._handle, self.zone_index, self._num_vars)
 
     def _load_auxdata(self) -> TecplotAuxDataReader:
         return TecplotSzlZoneAuxDataReader(self._handle, self.zone_index + 1)
@@ -339,9 +339,9 @@ class TecplotSzlFEZoneReader(TecplotFEZoneReader):
     first access.
     """
 
-    __slots__ = ("_handle", "num_vars")
+    __slots__ = ("_handle", "_num_vars")
     _handle: ctypes.c_void_p
-    num_vars: int
+    _num_vars: int
 
     def __init__(self, handle: ctypes.c_void_p, zone_index: int, num_vars: int) -> None:
         zone_num = zone_index + 1
@@ -361,7 +361,7 @@ class TecplotSzlFEZoneReader(TecplotFEZoneReader):
             shared_connectivity=shared_connectivity,
         )
         object.__setattr__(self, "_handle", handle)
-        object.__setattr__(self, "num_vars", num_vars)
+        object.__setattr__(self, "_num_vars", num_vars)
 
     def is_enabled(self) -> bool:
         """True if the zone is enabled (queried live).
@@ -372,7 +372,7 @@ class TecplotSzlFEZoneReader(TecplotFEZoneReader):
         return _szl_zone_is_enabled(self._handle, self.zone_index)
 
     def _load_variables(self) -> list[TecplotVariableReader]:
-        return _load_szl_variables(self._handle, self.zone_index, self.num_vars)
+        return _load_szl_variables(self._handle, self.zone_index, self._num_vars)
 
     def _connectivity_zone(self) -> int:
         """Return the 0-based zone index that holds this zone's connectivity."""

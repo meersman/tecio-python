@@ -33,9 +33,9 @@ the variable arrays can be suppressed entirely to focus on structural metadata.
         overhead of parsing zone data.
 
     ``--ignore-variables``
-        Print the file header and all zone headers, then exit. Variable arrays and
-        connectivity tables are suppressed. Use this to survey zone names, types, and
-        dimensions across a large file without printing any data.
+        Print the file header and all zone headers, then exit. Variable arrays are
+        suppressed. Used to survey zone names, types, and dimensions across a large file
+        without printing any variable data.
 
     ``-z INDEX``, ``--zone INDEX``
         Restrict output to the zone at the given one-based index. All other zones are
@@ -81,6 +81,12 @@ import numpy as np
 
 from .. import TecplotFEZoneReader, TecplotOrderedZoneReader, TecplotPolyZoneReader
 from .. import open as tecio_open
+
+
+def _print_array(label: str, values: np.ndarray) -> None:
+    """Print *values* under *label*, wrapped to line up with the label column."""
+    prefix = f"  {label:<21}: "
+    print(f"{prefix}{np.array2string(values, prefix=prefix, separator=', ')}")
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -250,6 +256,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 separator=", ",
                             )
                             print(f"  Face Connections     : {value_str}")
+
+                    # Show the face map and boundary connections for poly zones. Zones
+                    # that share connectivity print the face map of their source zone.
+                    if isinstance(zone, TecplotPolyZoneReader):
+                        print(f"  Total Face Nodes     : {zone.face_nodes.size}")
+                        _print_array("Face Node Counts", zone.face_node_counts)
+                        _print_array("Face Nodes", zone.face_nodes)
+                        _print_array("Face Left Elements", zone.face_left_elements)
+                        _print_array("Face Right Elements", zone.face_right_elements)
+                        if zone.num_boundary_faces > 0:
+                            _print_array(
+                                "Bndry Conn Counts", zone.boundary_connection_counts
+                            )
+                            _print_array(
+                                "Bndry Conn Elements",
+                                zone.boundary_connection_elements,
+                            )
+                            _print_array(
+                                "Bndry Conn Zones", zone.boundary_connection_zones
+                            )
 
                     # Print variable record
                     if args.print_vars:
