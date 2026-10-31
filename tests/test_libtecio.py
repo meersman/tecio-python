@@ -30,7 +30,6 @@ import pytest
 from create_test_data import (
     create_FE_brick,
     create_FE_lineseg,
-    create_FE_polygon,
     create_FE_prism,
     create_FE_pyramid,
     create_FE_quad,
@@ -38,6 +37,7 @@ from create_test_data import (
     create_FE_tri,
     create_FE_two_bricks,
     create_ordered,
+    create_poly_octagon,
 )
 
 from tecio import (
@@ -895,7 +895,8 @@ class TestClassicApi:
         - FEPOLYGON is the only way to represent truly arbitrary 2-D polygons;
           use this instead of FEQUADRILATERAL when elements have variable node counts
         """
-        x, y, faces = create_FE_polygon()
+        # x, y, faces = create_FE_polygon()
+        x, y, faces, left_elems, right_elems = create_poly_octagon()
         c = np.array([8], dtype=np.float32)
         path = output_path("test_plt_fe_polygon.plt")
 
@@ -904,8 +905,11 @@ class TestClassicApi:
         num_faces = len(faces)
         total_face_nodes = len(faces.ravel())
         face_node_counts = np.full(num_faces, 2)
-        left_elems = np.full(num_faces, 0)
-        right_elems = np.full(num_faces, 1)
+        faces_1based = faces + 1
+        left_elems_1based = left_elems + 1
+        right_elems_1based = right_elems + 1
+        # left_elems = np.full(num_faces, 0)
+        # right_elems = np.full(num_faces, 1)
 
         libtecio.tecini142(str(path), variables=["x", "y", "c"])
         libtecio.tecpolyzne142(
@@ -925,11 +929,34 @@ class TestClassicApi:
         libtecio.tecdat142(y.ravel(), is_double=False)
         libtecio.tecdat142(c.ravel(), is_double=False)
         libtecio.tecpolyface142(
-            face_node_counts, faces.ravel(order="C"), left_elems, right_elems
+            face_node_counts,
+            faces_1based.ravel(order="C"),
+            left_elems_1based,
+            right_elems_1based,
         )
         libtecio.tecend142()
 
         assert path.exists()
+
+    def test_plt_tecpolybconn142_rejects_inconsistent_lengths(
+        self, output_path: Callable
+    ) -> None:
+        """``tecpolybconn142`` checks array lengths before TecIO reads them unchecked.
+
+        TecIO does no bounds check on the connection arrays, and a null zone array
+        crashes the process, so the wrapper requires zones and validates every length.
+        """
+        path = output_path("test_plt_polybconn_lengths.plt")
+        libtecio.tecini142(
+            str(path), variables=["x", "y"], scratch_dir=str(path.parent)
+        )
+        try:
+            with pytest.raises(ValueError, match="elems"):
+                libtecio.tecpolybconn142([2], [1], [1])
+            with pytest.raises(ValueError, match="zones"):
+                libtecio.tecpolybconn142([2], [1, 1], [1])
+        finally:
+            libtecio.tecend142()
 
 
 # ===========================================================================

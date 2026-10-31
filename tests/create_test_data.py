@@ -28,14 +28,14 @@ def create_ordered(
 
     Example layout for (3, 4, 1) - single XY plane viewed from above:
 
-    j=4  10 -- 11 -- 12
-         |     |     |
-    j=3   7 ---8 --- 9
-          |    |     |
-    j=2   4 ---5 --- 6
-          |    |     |
-    j=1   1 ---2 --- 3
-         i=1  i=2   i=3
+    j=3   9 -- 10 -- 11
+          |     |     |
+    j=2   6 --- 7 --- 8
+          |     |     |
+    j=1   3 --- 4 --- 5
+          |     |     |
+    j=0   0 --- 1 --- 2
+         i=0  i=1   i=2
 
     Node ordering: i (x) varies fastest, then j (y), then k (z).
     """
@@ -52,7 +52,7 @@ def create_FE_lineseg() -> tuple[
     """Create coordinates and nodemap for FELINESEG zone type.
 
     Node Map:
-    [0]--<C1>--[1]--<C2>--[2]
+    [0] -- <C0> -- [1] -- <C1> -- [2]
     """
     # xy coords
     points = np.array([
@@ -76,10 +76,10 @@ def create_FE_tri() -> tuple[
     r"""Create coordinates and nodemap for FELTRIANGLE zone type.
 
     Node Map: Two triangles sharing edge 1-2:
-    2 --- 3  Cell 1: 0-1-2
-    |\ C2 |  Cell 2: 1-3-2
+    2 --- 3  Cell 0: 0-1-2
+    |\ C1 |  Cell 1: 1-3-2
     | \   |
-    |C1 \ |
+    |C0 \ |
     0 --- 1
     """
     points = np.array([
@@ -104,8 +104,8 @@ def create_FE_quad() -> tuple[
     """Create coordinates and nodemap for FEQUADRILATERAL zone type.
 
     Node Map: Two quads sharing edge 1-4:
-    3 --- 4 --- 5  Cell 1: 0-1-4-3
-    | C1  | C2  |  Cell 2: 1-2-5-4
+    3 --- 4 --- 5  Cell 0: 0-1-4-3
+    | C0  | C1  |  Cell 1: 1-2-5-4
     0 --- 1 --- 2
     """
     # Can create polygon from the same two FE tri cells above
@@ -125,48 +125,6 @@ def create_FE_quad() -> tuple[
         [1, 2, 5, 4],
     ])
     return x, y, nodes
-
-
-def create_FE_polygon() -> tuple[
-    npt.NDArray[np.float32], npt.NDArray[np.float32], npt.NDArray[np.int32]
-]:
-    r"""Create coordinates and node map for FEPOLYGON zone type.
-
-    Node map: single octogon cell
-             F5
-           6 -- 5
-      F6 /        \ F4
-       7            4
-    F7 |     E1     | F3
-       8            3
-      F8 \        / F2
-           1 -- 2
-             F1
-    """
-    points = np.array([
-        [0.25, 0],  # node 1
-        [0.75, 0],  # node 2
-        [1, 0.25],  # node 3
-        [1, 0.75],  # node 4
-        [0.75, 1],  # node 5
-        [0.25, 1],  # node 6
-        [0, 0.75],  # node 7
-        [0, 0.25],  # node 8
-    ])
-    x = points[:, 0]
-    y = points[:, 1]
-    # Nodemap
-    faces = np.array([
-        [2, 1],  # Face 1
-        [3, 2],  # Face 2
-        [4, 3],  # Face 3
-        [5, 4],  # Face 4
-        [6, 5],  # Face 5
-        [7, 6],  # Face 6
-        [8, 7],  # Face 7
-        [1, 8],  # Face 8
-    ])
-    return x, y, faces
 
 
 def create_FE_tet() -> tuple[
@@ -190,8 +148,8 @@ def create_FE_tet() -> tuple[
        \|/
         4        <- apex tet 2 (z < 0)
 
-    Cell 1: [0, 1, 2, 3]
-    Cell 2: [0, 2, 1, 4]
+    Cell 0: [0, 1, 2, 3]
+    Cell 1: [0, 2, 1, 4]
     """
     points = np.array([
         [0.0, 0.0, 0.0],  # 0
@@ -277,7 +235,24 @@ def create_FE_brick() -> tuple[
     npt.NDArray[np.int32],
     npt.NDArray[np.int32],
 ]:
-    """Create coordinates and nodemap for FEBRICK zone type."""
+    """Create coordinates and nodemap for FEBRICK zone type.
+
+    Node Map:
+      7 ----- 6
+     /|      /|
+    4 ----- 5 |
+    | 3 ----|-2
+    |/      |/
+    0 ----- 1
+
+    Faces:
+    f0: n0-n4-n7-n3 left face (Imin)
+    f1: n1-n2-n6-n5 right face (Imax)
+    f2: n0-n1-n5-n5 front face (Jmin)
+    f3: n2-n3-n7-n6 back face (Jmax)
+    f4: n0-n1-n2-n3 bottom face (Kmin)
+    f5: n4-n5-n6-n7 top face (Kmax)
+    """
     points = np.array([
         [0, 0, 0],  # 0
         [1, 0, 0],  # 1
@@ -314,12 +289,12 @@ def create_FE_two_bricks() -> tuple[
     """Two bricks sharing a face, with explicit face neighbor connectivity.
 
     Node Map:
-      7 --- 6 --- 11
-     /|    /|    /|
-    4 --- 5 --- 10|
-    | 3 --|-2 --|-8
-    |/    |/    |/
-    0 --- 1 --- 9
+      7 ----- 6 ---- 11
+     /|      /|      /|
+    4 ----- 5 ---- 10 |
+    | 3 ----|-2 ----|-8
+    |/      |/      |/
+    0 ----- 1 ----- 9
 
     Notes:
     - For the first FEBRICK cell shown above the faces are numbered
@@ -329,7 +304,6 @@ def create_FE_two_bricks() -> tuple[
     f3: n2-n3-n7-n6 back face (Jmax)
     f4: n0-n1-n2-n3 bottom face (Kmin)
     f5: n4-n5-n6-n7 top face (Kmax)
-
     """
     points = np.array([
         [0, 0, 0],  # 0
@@ -375,10 +349,10 @@ def create_FE_mixed() -> tuple[
     and num_nodes_per_element array (one entry per cell).
 
     Cell layout:
-        Cell 1: Tet       (4 nodes)
-        Cell 2: Pyramid   (5 nodes)
-        Cell 3: Prism     (6 nodes)
-        Cell 4: Hex       (8 nodes)
+        Cell 0: Tet       (4 nodes)
+        Cell 1: Pyramid   (5 nodes)
+        Cell 2: Prism     (6 nodes)
+        Cell 3: Hex       (8 nodes)
     """
     points = np.array(
         [
@@ -432,82 +406,837 @@ def create_FE_mixed() -> tuple[
     return x, y, z, node_map, num_nodes_per_element
 
 
-def create_FE_hanging_node_poly() -> tuple[
-    npt.NDArray[np.float32],
-    npt.NDArray[np.float32],
+# ======================================================================================
+# Face-based (FEPOLYGON / FEPOLYHEDRON) zones
+#
+# Notesl:
+# - Nodes and elements start at 0, -1 in the left/right arrays means no element, and -(b +
+#   2) references connected boundary face b of the boundary connection arrays. A polygon
+#   face (edge) runs from its first to its second node with the left element on its
+#   left. A polyhedron face lists its nodes so the right-hand rule normal points out of
+#   the left element.
+# The functions return:
+#   polygons:    x, y, face_nodes (num_faces, 2), face_left, face_right
+#   polyhedra:   x, y, z, face_nodes (flat), face_node_counts, face_left, face_right
+# The "coarse" boundary connection zones also return bconn_counts, bconn_elems and
+# bconn_zones, which hold the elements and zones that every connected boundary face
+# touches.
+# ======================================================================================
+
+
+def _split_faces(
+    faces: list[tuple[list[int], int, int]],
+) -> tuple[
     npt.NDArray[np.int32],
     npt.NDArray[np.int32],
     npt.NDArray[np.int32],
     npt.NDArray[np.int32],
 ]:
-    r"""Create coordinates and face data for an FEPOLYGON zone.
+    """Split ``(nodes, left, right)`` rows into face_nodes, counts, left and right."""
+    face_nodes = np.concatenate([f[0] for f in faces])
+    counts = np.array([len(f[0]) for f in faces])
+    left = np.array([f[1] for f in faces])
+    right = np.array([f[2] for f in faces])
+    return face_nodes, counts, left, right
 
-    Geometry: two adjacent convex polygons sharing one edge.
 
-    - Element 1: pentagon  — nodes 1, 2, 3, 4, 5
-    - Element 2: triangle  — nodes 2, 6, 3
+def create_poly_octagon() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    r"""Create coordinates and face map for a single octagon FEPOLYGON cell.
 
-    Layout (approximate)::
+    Nodes, faces (F) and element (E), counterclockwise:
 
-        4 ---- 3 --- 6
-        |  E1  | E  /
-        5      | 2 /
-         \     |  /
-          1--- 3 /
+              F4
+           5 ---- 4
+       F5 /        \ F3
+         6          3
+      F6 |    E0    | F2
+         7          2
+       F7 \        / F1
+           0 ---- 1
+              F0
 
-    For FEPOLYGON, every face is an *edge* (2 nodes). Faces are defined
-    once and shared between adjacent elements via left/right element indices.
-    A value of 0 in left/right means the face is on the domain boundary.
-
-    Face table (1-based node indices, 1-based element indices)::
-
-        Face  Nodes   Left  Right
-        ----  ------  ----  -----
-         1    1–2       1     0    boundary of E1
-         2    2–3       1     2    shared edge
-         3    3–4       1     0    boundary of E1
-         4    4–5       1     0    boundary of E1
-         5    5–1       1     0    boundary of E1
-         6    2–6       2     0    boundary of E2
-         7    6–3       2     0    boundary of E2
-
-    Returns:
-        x, y:             Node coordinates (float32, shape ``(6,)``).
-        face_node_counts: Nodes per face (int32, shape ``(7,)`` — all 2).
-        face_nodes:       Concatenated node lists (int32, shape ``(14,)``).
-        face_left_elems:  Left element per face (int32, shape ``(7,)``).
-        face_right_elems: Right element per face (int32, shape ``(7,)``).
-
+    Face i runs from node i to node i + 1 (F7 closes the loop from node 7 to node 0).
+    The cell is on the left of every face and nothing is on the right.
     """
-    points = np.array(
-        [
-            [0.0, 0.0],  # 1
-            [1.0, 0.0],  # 2
-            [1.0, 1.0],  # 3
-            [0.5, 1.5],  # 4
-            [-0.5, 1.0],  # 5
-            [2.0, 1.0],  # 6
-        ],
-        dtype=np.float32,
-    )
+    points = np.array([
+        [0.25, 0],  # 0
+        [0.75, 0],  # 1
+        [1, 0.25],  # 2
+        [1, 0.75],  # 3
+        [0.75, 1],  # 4
+        [0.25, 1],  # 5
+        [0, 0.75],  # 6
+        [0, 0.25],  # 7
+    ])
     x = points[:, 0]
     y = points[:, 1]
-
-    # Each row: [node_a, node_b, left_elem, right_elem]
     faces = np.array([
-        [1, 2],  # face 1 — E1 boundary
-        [2, 3],  # face 2 — shared
-        [3, 4],  # face 3 — E1 boundary
-        [4, 5],  # face 4 — E1 boundary
-        [5, 1],  # face 5 — E1 boundary
-        [2, 6],  # face 6 — E2 boundary
-        [6, 3],  # face 7 — E2 boundary
+        # node 0, node 1, left, right
+        [0, 1, 0, -1],  # F0
+        [1, 2, 0, -1],  # F1
+        [2, 3, 0, -1],  # F2
+        [3, 4, 0, -1],  # F3
+        [4, 5, 0, -1],  # F4
+        [5, 6, 0, -1],  # F5
+        [6, 7, 0, -1],  # F6
+        [7, 0, 0, -1],  # F7
     ])
-    # All polygon faces are edges → 2 nodes each
-    num_faces = len(faces)
-    face_node_counts = np.full(num_faces, 2)
-    face_nodes = faces.ravel()
-    face_left_elems = faces[:, 0]
-    face_right_elems = faces[:, 1]
+    return x, y, faces[:, :2], faces[:, 2], faces[:, 3]
 
-    return x, y, face_nodes, face_node_counts, face_left_elems, face_right_elems
+
+def create_poly_two_cells() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    r"""Create coordinates and face map for a pentagon and a triangle FEPOLYGON.
+
+    The pentagon E0 and the triangle E1 share face F1 (not to scale):
+            3
+       F3 /    \ F2
+        /        \      F6
+      4            2 ------ 5
+      \     E0     |       /
+       \           | E1  /
+     F4 \       F1 |   / F5
+         \         | /
+          0 ------ 1
+             F0
+    The pentagon has faces F0 to F4 and the triangle F1, F5 and F6. F1 is the only face
+    with an element on both sides.
+    """
+    points = np.array([
+        [0, 0],  # 0
+        [1, 0],  # 1
+        [1, 1],  # 2
+        [0.5, 1.5],  # 3
+        [-0.5, 1],  # 4
+        [2, 1],  # 5
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    faces = np.array([
+        # node 0, node 1, left, right
+        [0, 1, 0, -1],  # F0
+        [1, 2, 0, 1],  # F1
+        [2, 3, 0, -1],  # F2
+        [3, 4, 0, -1],  # F3
+        [4, 0, 0, -1],  # F4
+        [1, 5, 1, -1],  # F5
+        [5, 2, 1, -1],  # F6
+    ])
+    return x, y, faces[:, :2], faces[:, 2], faces[:, 3]
+
+
+def create_poly_hanging_ladder() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create coordinates and face map for FEPOLYGON cells with hanging nodes.
+
+    Three columns hold 1, 2 and 4 cells, each cell half as tall as the one before it.
+    A cell touches two cells of the next column and carries the node between them, so
+    E0, E1 and E2 are pentagons (hanging nodes 3, 6 and 8) and E3 to E6 are quads:
+
+     1 ----------- 4 ----------- 9 ----------- 14
+     |             |             |    E6       |
+     |             |    E2       8 ----------- 13
+     |             |             |    E5       |
+     |    E0       3 ----------- 7 ----------- 12
+     |             |             |    E4       |
+     |             |    E1       6 ----------- 11
+     |             |             |    E3       |
+     0 ----------- 2 ----------- 5 ----------- 10
+
+    Column k spans x = k to k + 1 and the domain is 4 tall. Faces are listed cell by
+    cell, so each face belongs to the first cell that uses it.
+    """
+    points = np.array([
+        [0, 0],  # 0
+        [0, 4],  # 1
+        [1, 0],  # 2
+        [1, 2],  # 3
+        [1, 4],  # 4
+        [2, 0],  # 5
+        [2, 1],  # 6
+        [2, 2],  # 7
+        [2, 3],  # 8
+        [2, 4],  # 9
+        [3, 0],  # 10
+        [3, 1],  # 11
+        [3, 2],  # 12
+        [3, 3],  # 13
+        [3, 4],  # 14
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    faces = np.array([
+        # node 0, node 1, left, right
+        [0, 2, 0, -1],  # F0
+        [2, 3, 0, 1],  # F1
+        [3, 4, 0, 2],  # F2
+        [4, 1, 0, -1],  # F3
+        [1, 0, 0, -1],  # F4
+        [2, 5, 1, -1],  # F5
+        [5, 6, 1, 3],  # F6
+        [6, 7, 1, 4],  # F7
+        [7, 3, 1, 2],  # F8
+        [7, 8, 2, 5],  # F9
+        [8, 9, 2, 6],  # F10
+        [9, 4, 2, -1],  # F11
+        [5, 10, 3, -1],  # F12
+        [10, 11, 3, -1],  # F13
+        [11, 6, 3, 4],  # F14
+        [11, 12, 4, -1],  # F15
+        [12, 7, 4, 5],  # F16
+        [12, 13, 5, -1],  # F17
+        [13, 8, 5, 6],  # F18
+        [13, 14, 6, -1],  # F19
+        [14, 9, 6, -1],  # F20
+    ])
+    return x, y, faces[:, :2], faces[:, 2], faces[:, 3]
+
+
+def create_poly_golden_spiral() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create coordinates and face map for squares laid out as a golden spiral.
+
+    Five squares with sides 1, 1, 2, 3 and 5 tile a rectangle. Each square is attached
+    to the long side of the rectangle built so far and turns the spiral by 90 degrees.
+    The larger squares collect hanging nodes where they touch several smaller ones, so
+    E0 and E1 have 4 faces, E2 and E3 have 5 and E4 has 6 (nodes 6 and 3 on its top):
+
+     2 ----------------- 5 ----------- 11
+     |                   |             |
+     |                   |    E2       |
+     |       E3          |             |
+     |                   4 ----- 7 --- 10
+     |                   |  E0  |  E1  |
+     1 ----------------- 3 ----- 6 ---- 9
+     |                                 |
+     |                                 |
+     |                                 |
+     |              E4                 |
+     |                                 |
+     |                                 |
+     |                                 |
+     0 ------------------------------- 8
+
+    Square k has area side(k)**2 with sides 1, 1, 2, 3, 5. Faces are listed cell by
+    cell, so each face belongs to the first cell that uses it.
+    """
+    points = np.array([
+        [-3, -5],  # 0
+        [-3, 0],  # 1
+        [-3, 3],  # 2
+        [0, 0],  # 3
+        [0, 1],  # 4
+        [0, 3],  # 5
+        [1, 0],  # 6
+        [1, 1],  # 7
+        [2, -5],  # 8
+        [2, 0],  # 9
+        [2, 1],  # 10
+        [2, 3],  # 11
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    faces = np.array([
+        # node 0, node 1, left, right
+        [3, 6, 0, 4],  # F0
+        [6, 7, 0, 1],  # F1
+        [7, 4, 0, 2],  # F2
+        [4, 3, 0, 3],  # F3
+        [6, 9, 1, 4],  # F4
+        [9, 10, 1, -1],  # F5
+        [10, 7, 1, 2],  # F6
+        [10, 11, 2, -1],  # F7
+        [11, 5, 2, -1],  # F8
+        [5, 4, 2, 3],  # F9
+        [1, 3, 3, 4],  # F10
+        [5, 2, 3, -1],  # F11
+        [2, 1, 3, -1],  # F12
+        [0, 8, 4, -1],  # F13
+        [8, 9, 4, -1],  # F14
+        [1, 0, 4, -1],  # F15
+    ])
+    return x, y, faces[:, :2], faces[:, 2], faces[:, 3]
+
+
+def create_poly_bconn_fine() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create zone 0 of a pair of FEPOLYGON zones joined by boundary connections.
+
+    Four fine cells stacked in x = 1 to 2. The coarse zone (see
+    :func:`create_poly_bconn_coarse`) lies against their left side, x = 1:
+
+     4 ----------- 9
+     |     E3      |
+     3 ----------- 8
+     |     E2      |
+     2 ----------- 7
+     |     E1      |
+     1 ----------- 6
+     |     E0      |
+     0 ----------- 5
+
+    The left faces (F3, F6, F9 and F12) have no element on their right because the
+    neighbors are in another zone, which only the coarse zone references.
+    """
+    points = np.array([
+        [1, 0],  # 0
+        [1, 1],  # 1
+        [1, 2],  # 2
+        [1, 3],  # 3
+        [1, 4],  # 4
+        [2, 0],  # 5
+        [2, 1],  # 6
+        [2, 2],  # 7
+        [2, 3],  # 8
+        [2, 4],  # 9
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    faces = np.array([
+        # node 0, node 1, left, right
+        [0, 5, 0, -1],  # F0
+        [5, 6, 0, -1],  # F1
+        [6, 1, 0, 1],  # F2
+        [1, 0, 0, -1],  # F3
+        [6, 7, 1, -1],  # F4
+        [7, 2, 1, 2],  # F5
+        [2, 1, 1, -1],  # F6
+        [7, 8, 2, -1],  # F7
+        [8, 3, 2, 3],  # F8
+        [3, 2, 2, -1],  # F9
+        [8, 9, 3, -1],  # F10
+        [9, 4, 3, -1],  # F11
+        [4, 3, 3, -1],  # F12
+    ])
+    return x, y, faces[:, :2], faces[:, 2], faces[:, 3]
+
+
+def create_poly_bconn_coarse() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create zone 1 of a pair of FEPOLYGON zones joined by boundary connections.
+
+    Two coarse cells in x = 0 to 1. Each right face (F1 and F4) is one face against two
+    fine cells of zone 0 (see :func:`create_poly_bconn_fine`), so its right element is
+    a connected boundary face. TecIO only accepts connections to a zone that already
+    exists, so this zone is written second.
+
+     2 ----------- 5            Right element   Connected to zone 0
+     |             |            F1: -2          elements 0 and 1
+     |     E1      |            F4: -3          elements 2 and 3
+     |             |
+     1 ----------- 4
+     |             |
+     |     E0      |
+     |             |
+     0 ----------- 3
+
+    Returns the usual polygon arrays followed by bconn_counts, bconn_elems and
+    bconn_zones.
+    """
+    points = np.array([
+        [0, 0],  # 0
+        [0, 2],  # 1
+        [0, 4],  # 2
+        [1, 0],  # 3
+        [1, 2],  # 4
+        [1, 4],  # 5
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    faces = np.array([
+        # node 0, node 1, left, right
+        [0, 3, 0, -1],  # F0
+        [3, 4, 0, -2],  # F1, connected boundary face 0
+        [4, 1, 0, 1],  # F2
+        [1, 0, 0, -1],  # F3
+        [4, 5, 1, -3],  # F4, connected boundary face 1
+        [5, 2, 1, -1],  # F5
+        [2, 1, 1, -1],  # F6
+    ])
+    bconn_counts = np.array([2, 2])  # connections of each connected boundary face
+    bconn_elems = np.array([0, 1, 2, 3])  # connected element of each connection
+    bconn_zones = np.array([0, 0, 0, 0])  # connected zone of each connection
+    return (
+        x,
+        y,
+        faces[:, :2],
+        faces[:, 2],
+        faces[:, 3],
+        bconn_counts,
+        bconn_elems,
+        bconn_zones,
+    )
+
+
+def create_polyhedron_cube() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create coordinates and face map for a single cube FEPOLYHEDRON cell.
+
+    Node ordering is the same as for a FEBRICK (x right, y back, z up):
+
+        6 ------- 7
+       /|        /|
+      4 ------- 5 |
+      | 2 ------|-3
+      |/        |/
+      0 ------- 1
+
+    The six faces are F0 -x, F1 +x, F2 -y, F3 +y, F4 -z and F5 +z. The cell E0 is on
+    the left of every face and nothing is on the right.
+    """
+    points = np.array([
+        [0, 0, 0],  # 0
+        [1, 0, 0],  # 1
+        [0, 1, 0],  # 2
+        [1, 1, 0],  # 3
+        [0, 0, 1],  # 4
+        [1, 0, 1],  # 5
+        [0, 1, 1],  # 6
+        [1, 1, 1],  # 7
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    faces = [
+        # nodes, left, right
+        ([0, 4, 6, 2], 0, -1),  # F0
+        ([1, 3, 7, 5], 0, -1),  # F1
+        ([0, 1, 5, 4], 0, -1),  # F2
+        ([2, 6, 7, 3], 0, -1),  # F3
+        ([0, 2, 3, 1], 0, -1),  # F4
+        ([4, 5, 7, 6], 0, -1),  # F5
+    ]
+    return x, y, z, *_split_faces(faces)
+
+
+def create_polyhedron_cube_pair() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create coordinates and face map for two cubes sharing a face.
+
+    E1 sits on top of E0 and they share F5, the only face with an element on both sides
+    (x right, y back, z up):
+
+        10 ------ 11
+        /|        /|
+       8 ------- 9 |
+       | |       | |        E1
+       | 6 ------|-7        F5 (shared, nodes 4, 5, 6, 7)
+       |/|       |/|
+       4 ------- 5 |
+       | |       | |        E0
+       | 2 ------|-3
+       |/        |/
+       0 ------- 1
+
+    The faces of each cube are numbered -x, +x, -y, +y, -z, +z and the shared face is
+    the +z face of E0 and the -z face of E1, so E1 has no -z face of its own.
+    """
+    points = np.array([
+        [0, 0, 0],  # 0
+        [1, 0, 0],  # 1
+        [0, 1, 0],  # 2
+        [1, 1, 0],  # 3
+        [0, 0, 1],  # 4
+        [1, 0, 1],  # 5
+        [0, 1, 1],  # 6
+        [1, 1, 1],  # 7
+        [0, 0, 2],  # 8
+        [1, 0, 2],  # 9
+        [0, 1, 2],  # 10
+        [1, 1, 2],  # 11
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    faces = [
+        # nodes, left, right
+        ([0, 4, 6, 2], 0, -1),  # F0, E0 -x
+        ([1, 3, 7, 5], 0, -1),  # F1, E0 +x
+        ([0, 1, 5, 4], 0, -1),  # F2, E0 -y
+        ([2, 6, 7, 3], 0, -1),  # F3, E0 +y
+        ([0, 2, 3, 1], 0, -1),  # F4, E0 -z
+        ([4, 5, 7, 6], 0, 1),  # F5, E0 +z and E1 -z
+        ([4, 8, 10, 6], 1, -1),  # F6, E1 -x
+        ([5, 7, 11, 9], 1, -1),  # F7, E1 +x
+        ([4, 5, 9, 8], 1, -1),  # F8, E1 -y
+        ([6, 10, 11, 7], 1, -1),  # F9, E1 +y
+        ([8, 9, 11, 10], 1, -1),  # F10, E1 +z
+    ]
+    return x, y, z, *_split_faces(faces)
+
+
+def create_polyhedron_mixed_faces() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    r"""Create coordinates and face map for polyhedra with 3, 4 and 6 node faces.
+
+    E0 is a unit cube, E1 a pyramid on its top face and E2 a triangular prism on its +x
+    face. The hexagonal prism E3 stands apart. The cube has the same nodes as in
+    :func:`create_polyhedron_cube`. Side view along y (back nodes hide behind the
+    front ones), with x right and z up:
+              8                           8
+             / \                         / \
+        F9 /     \ F7               F9 /     \ F7
+         /  E1/F6  \                 /  E1/F8  \
+        4 --------- 5 .             7 --------- 6 .
+        |    F1     |   \  F13      |    F1     |   \  F13
+        |           |     \         |           |     \
+     F5 |  E0/F2    |E2/F10 9    F5 |  E0/F4    |E2/F11 10
+        |        F3 |     /         |        F3 |     /
+        |           |   / F12       |           |   / F12
+        0 --------- 1 '             3 --------- 2 '
+             F0                           F0
+        (Front, y = 0)                (Rear, y = 1)
+
+    The pyramid base (F1) and the prism side (F3) are the only shared faces. The
+    hexagonal prism is seen from above with its bottom ring 11 to 16 (z = 0) and top
+    ring 17 to 22 (z = 1), so node n + 6 is above node n:
+               F17                      F17
+           13 ----- 12              19 ----- 18
+      F18 /           \ F16    F18 /           \ F16
+         /             \          /             \
+       14    E3/F14     11      20    E3/F15     17
+         \             /          \             /
+      F19 \           / F21    F19 \           / F21
+           15 ----- 16              21 ----- 22
+               F20                      F20
+         (Bottom, z = 0)            (Top, z = 1)
+    Faces: F0 to F5 cube, F6 to F9 pyramid, F10 to F13 prism, F14 to F21 hexagonal
+    prism (F14 bottom, F15 top, then six sides).
+    """
+    h = np.sqrt(3) / 4  # half the hexagon height
+    points = np.array([
+        [0, 0, 0],  # 0
+        [1, 0, 0],  # 1
+        [1, 1, 0],  # 2
+        [0, 1, 0],  # 3
+        [0, 0, 1],  # 4
+        [1, 0, 1],  # 5
+        [1, 1, 1],  # 6
+        [0, 1, 1],  # 7
+        [0.5, 0.5, 1.8],  # 8
+        [1.8, 0, 0.5],  # 9
+        [1.8, 1, 0.5],  # 10
+        [4.5, 0.5, 0],  # 11
+        [4.25, 0.5 + h, 0],  # 12
+        [3.75, 0.5 + h, 0],  # 13
+        [3.5, 0.5, 0],  # 14
+        [3.75, 0.5 - h, 0],  # 15
+        [4.25, 0.5 - h, 0],  # 16
+        [4.5, 0.5, 1],  # 17
+        [4.25, 0.5 + h, 1],  # 18
+        [3.75, 0.5 + h, 1],  # 19
+        [3.5, 0.5, 1],  # 20
+        [3.75, 0.5 - h, 1],  # 21
+        [4.25, 0.5 - h, 1],  # 22
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    faces = [
+        # nodes, left, right
+        ([0, 3, 2, 1], 0, -1),  # F0, cube -z
+        ([4, 5, 6, 7], 0, 1),  # F1, cube +z and pyramid base
+        ([0, 1, 5, 4], 0, -1),  # F2, cube -y
+        ([1, 2, 6, 5], 0, 2),  # F3, cube +x and prism side
+        ([2, 3, 7, 6], 0, -1),  # F4, cube +y
+        ([0, 4, 7, 3], 0, -1),  # F5, cube -x
+        ([4, 5, 8], 1, -1),  # F6, pyramid -y side
+        ([5, 6, 8], 1, -1),  # F7, pyramid +x side
+        ([6, 7, 8], 1, -1),  # F8, pyramid +y side
+        ([4, 8, 7], 1, -1),  # F9, pyramid -x side
+        ([1, 9, 5], 2, -1),  # F10, prism -y end
+        ([2, 6, 10], 2, -1),  # F11, prism +y end
+        ([1, 2, 10, 9], 2, -1),  # F12, prism bottom slope
+        ([5, 9, 10, 6], 2, -1),  # F13, prism top slope
+        ([11, 16, 15, 14, 13, 12], 3, -1),  # F14, hexagon bottom
+        ([17, 18, 19, 20, 21, 22], 3, -1),  # F15, hexagon top
+        ([11, 12, 18, 17], 3, -1),  # F16
+        ([12, 13, 19, 18], 3, -1),  # F17
+        ([13, 14, 20, 19], 3, -1),  # F18
+        ([14, 15, 21, 20], 3, -1),  # F19
+        ([15, 16, 22, 21], 3, -1),  # F20
+        ([11, 17, 22, 16], 3, -1),  # F21
+    ]
+    return x, y, z, *_split_faces(faces)
+
+
+def create_polyhedron_hanging_columns() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create coordinates and face map for one coarse cube against four fine cubes.
+
+    The coarse cube E0 spans x = 0 to 2, y = 0 to 2 and z = 0 to 2, with nodes 0 to 7
+    numbered like the cube in :func:`create_polyhedron_cube`. The fine cubes E1 to E4
+    are 1 by 1 by 1 and fill x = 2 to 3, so the +x side of E0 is split into four faces
+    (F1 to F4) with hanging nodes 8 to 12. The two node planes seen from +x (y right,
+    z up):
+
+      x = 2                x = 3
+      5 ---- 12 --- 7      19 --- 20 --- 21
+      |  E3  |  E4  |      |  E3  |  E4  |
+      9 ---- 10 --- 11     16 --- 17 --- 18
+      |  E1  |  E2  |      |  E1  |  E2  |
+      1 ---- 8 ---- 3      13 --- 14 --- 15
+
+    Faces are listed cell by cell, so each face belongs to the first cell that uses it.
+    E0 has 9 faces: F0 and F5 to F8 on the outside and F1 to F4 shared with E1 to E4.
+    """
+    points = np.array([
+        [0, 0, 0],  # 0
+        [2, 0, 0],  # 1
+        [0, 2, 0],  # 2
+        [2, 2, 0],  # 3
+        [0, 0, 2],  # 4
+        [2, 0, 2],  # 5
+        [0, 2, 2],  # 6
+        [2, 2, 2],  # 7
+        [2, 1, 0],  # 8
+        [2, 0, 1],  # 9
+        [2, 1, 1],  # 10
+        [2, 2, 1],  # 11
+        [2, 1, 2],  # 12
+        [3, 0, 0],  # 13
+        [3, 1, 0],  # 14
+        [3, 2, 0],  # 15
+        [3, 0, 1],  # 16
+        [3, 1, 1],  # 17
+        [3, 2, 1],  # 18
+        [3, 0, 2],  # 19
+        [3, 1, 2],  # 20
+        [3, 2, 2],  # 21
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    faces = [
+        # nodes, left, right
+        ([0, 4, 6, 2], 0, -1),  # F0, E0 -x
+        ([1, 8, 10, 9], 0, 1),  # F1, E0 +x against E1
+        ([3, 11, 10, 8], 0, 2),  # F2, E0 +x against E2
+        ([5, 9, 10, 12], 0, 3),  # F3, E0 +x against E3
+        ([7, 12, 10, 11], 0, 4),  # F4, E0 +x against E4
+        ([0, 1, 5, 4], 0, -1),  # F5, E0 -y
+        ([2, 6, 7, 3], 0, -1),  # F6, E0 +y
+        ([0, 2, 3, 1], 0, -1),  # F7, E0 -z
+        ([4, 5, 7, 6], 0, -1),  # F8, E0 +z
+        ([13, 14, 17, 16], 1, -1),  # F9, E1 +x
+        ([1, 13, 16, 9], 1, -1),  # F10, E1 -y
+        ([8, 10, 17, 14], 1, 2),  # F11, E1 +y and E2 -y
+        ([1, 8, 14, 13], 1, -1),  # F12, E1 -z
+        ([9, 16, 17, 10], 1, 3),  # F13, E1 +z and E3 -z
+        ([14, 15, 18, 17], 2, -1),  # F14, E2 +x
+        ([3, 11, 18, 15], 2, -1),  # F15, E2 +y
+        ([3, 15, 14, 8], 2, -1),  # F16, E2 -z
+        ([10, 17, 18, 11], 2, 4),  # F17, E2 +z and E4 -z
+        ([16, 17, 20, 19], 3, -1),  # F18, E3 +x
+        ([5, 9, 16, 19], 3, -1),  # F19, E3 -y
+        ([10, 12, 20, 17], 3, 4),  # F20, E3 +y and E4 -y
+        ([5, 19, 20, 12], 3, -1),  # F21, E3 +z
+        ([17, 18, 21, 20], 4, -1),  # F22, E4 +x
+        ([7, 21, 18, 11], 4, -1),  # F23, E4 +y
+        ([7, 12, 20, 21], 4, -1),  # F24, E4 +z
+    ]
+    return x, y, z, *_split_faces(faces)
+
+
+def create_polyhedron_bconn_fine() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create zone 0 of a pair of FEPOLYHEDRON zones joined by boundary connections.
+
+    A 2 by 2 block of unit cubes in x = 2 to 3, with the coarse zone (see
+    :func:`create_polyhedron_bconn_coarse`) against the x = 2 side. The two node
+    planes seen from +x (y right, z up):
+
+      x = 2                x = 3
+      6 ---- 7 ---- 8      15 --- 16 --- 17
+      |  E2  |  E3  |      |  E2  |  E3  |
+      3 ---- 4 ---- 5      12 --- 13 --- 14
+      |  E0  |  E1  |      |  E0  |  E1  |
+      0 ---- 1 ---- 2      9 ---- 10 --- 11
+
+    The -x faces (F0, F6, F11 and F16) have no element on their right because their
+    neighbor is in another zone, which only the coarse zone references.
+    """
+    points = np.array([
+        [2, 0, 0],  # 0
+        [2, 1, 0],  # 1
+        [2, 2, 0],  # 2
+        [2, 0, 1],  # 3
+        [2, 1, 1],  # 4
+        [2, 2, 1],  # 5
+        [2, 0, 2],  # 6
+        [2, 1, 2],  # 7
+        [2, 2, 2],  # 8
+        [3, 0, 0],  # 9
+        [3, 1, 0],  # 10
+        [3, 2, 0],  # 11
+        [3, 0, 1],  # 12
+        [3, 1, 1],  # 13
+        [3, 2, 1],  # 14
+        [3, 0, 2],  # 15
+        [3, 1, 2],  # 16
+        [3, 2, 2],  # 17
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    faces = [
+        # nodes, left, right
+        ([0, 3, 4, 1], 0, -1),  # F0, E0 -x
+        ([9, 10, 13, 12], 0, -1),  # F1, E0 +x
+        ([0, 9, 12, 3], 0, -1),  # F2, E0 -y
+        ([1, 4, 13, 10], 0, 1),  # F3, E0 +y and E1 -y
+        ([0, 1, 10, 9], 0, -1),  # F4, E0 -z
+        ([3, 12, 13, 4], 0, 2),  # F5, E0 +z and E2 -z
+        ([1, 4, 5, 2], 1, -1),  # F6, E1 -x
+        ([10, 11, 14, 13], 1, -1),  # F7, E1 +x
+        ([2, 5, 14, 11], 1, -1),  # F8, E1 +y
+        ([1, 2, 11, 10], 1, -1),  # F9, E1 -z
+        ([4, 13, 14, 5], 1, 3),  # F10, E1 +z and E3 -z
+        ([3, 6, 7, 4], 2, -1),  # F11, E2 -x
+        ([12, 13, 16, 15], 2, -1),  # F12, E2 +x
+        ([3, 12, 15, 6], 2, -1),  # F13, E2 -y
+        ([4, 7, 16, 13], 2, 3),  # F14, E2 +y and E3 -y
+        ([6, 15, 16, 7], 2, -1),  # F15, E2 +z
+        ([4, 7, 8, 5], 3, -1),  # F16, E3 -x
+        ([13, 14, 17, 16], 3, -1),  # F17, E3 +x
+        ([5, 8, 17, 14], 3, -1),  # F18, E3 +y
+        ([7, 16, 17, 8], 3, -1),  # F19, E3 +z
+    ]
+    return x, y, z, *_split_faces(faces)
+
+
+def create_polyhedron_bconn_coarse() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+]:
+    """Create zone 1 of a pair of FEPOLYHEDRON zones joined by boundary connections.
+
+    One cube spanning x, y, z = 0 to 2 with nodes numbered like a FEBRICK (see
+    :func:`create_polyhedron_cube`):
+
+        6 ------- 7
+       /|        /|
+      4 ------- 5 |
+      | 2 ------|-3
+      |/        |/
+      0 ------- 1
+
+    The +x face F1 (nodes 1, 3, 7, 5) is a single face against all four cubes of zone 0
+    (see :func:`create_polyhedron_bconn_fine`), so its right element is connected
+    boundary face 0, written as -2. TecIO only accepts connections to a zone that
+    already exists, so this zone is written second.
+
+    Returns the usual polyhedron arrays followed by bconn_counts, bconn_elems and
+    bconn_zones.
+    """
+    points = np.array([
+        [0, 0, 0],  # 0
+        [2, 0, 0],  # 1
+        [0, 2, 0],  # 2
+        [2, 2, 0],  # 3
+        [0, 0, 2],  # 4
+        [2, 0, 2],  # 5
+        [0, 2, 2],  # 6
+        [2, 2, 2],  # 7
+    ])
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    faces = [
+        # nodes, left, right
+        ([0, 4, 6, 2], 0, -1),  # F0, -x
+        ([1, 3, 7, 5], 0, -2),  # F1, +x, connected boundary face 0
+        ([0, 1, 5, 4], 0, -1),  # F2, -y
+        ([2, 6, 7, 3], 0, -1),  # F3, +y
+        ([0, 2, 3, 1], 0, -1),  # F4, -z
+        ([4, 5, 7, 6], 0, -1),  # F5, +z
+    ]
+    bconn_counts = np.array([4])  # connections of each connected boundary face
+    bconn_elems = np.array([0, 1, 2, 3])  # connected element of each connection
+    bconn_zones = np.array([0, 0, 0, 0])  # connected zone of each connection
+    return (
+        x,
+        y,
+        z,
+        *_split_faces(faces),
+        bconn_counts,
+        bconn_elems,
+        bconn_zones,
+    )

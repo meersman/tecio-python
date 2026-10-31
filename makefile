@@ -2,7 +2,7 @@ PYTHON ?= python3
 PACKAGE = tecio-python
 
 .PHONY: help \
-	install install-dev uninstall \
+	install uninstall venv \
 	format lint typecheck \
 	test coverage testclean \
 	build distclean clean \
@@ -15,9 +15,8 @@ help:
 	@echo "    ================================================================="
 	@echo "    Setup:"
 	@echo "      make install          Install tecio package and dependencies"
-	@echo "      make install-dev      Install dev dependencies"
-	@echo "      make install-docs     Install docs dependencies"
 	@echo "      make uninstall        Uninstall tecio  package"
+	@echo "      make venv             Create python env and install tecio package and dependencies"
 	@echo "    Code Quality:"
 	@echo "      make format           Format code ruff"
 	@echo "      make lint             Run code linting with ruff"
@@ -36,27 +35,24 @@ help:
 
 # Install package dependencies
 install:
-	$(PYTHON) -m pip install -e .
-
-# Install development dependencies
-install-dev:
-	$(PYTHON) -m pip install -e ".[dev]"
-
-# Install autodoc dependencies
-install-docs:
-	$(PYTHON) -m pip install -e ".[docs]"
+	$(PYTHON) -m pip install -e ".[all]"
 
 # Uninstall package
 uninstall:
 	$(PYTHON) -m pip uninstall -y $(PACKAGE)
 
-# Format code with black and isort
-format:
-	ruff format --check tecio
+# Create venv and install tecio and dependencies
+venv:
+	$(PYTHON) -m venv .venv
+	.venv/bin/$(PYTHON) -m pip install -e ".[all]"
 
-# Run linters
+# Format code with ruff
+format:
+	ruff format --check
+
+# Run linter
 lint:
-	ruff check tecio
+	ruff check
 
 # Run type checker
 typecheck:

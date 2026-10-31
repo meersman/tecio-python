@@ -52,8 +52,8 @@ tecstats = "tecio.cli.tecstats:main"
 dev = [
     "build",
     "twine",
-    "ruff",
-    "ty",
+    "ruff>=0.17.3",
+    "ty>=0.0.95",
     "pytest",
     "pytest-cov",
 ]
@@ -64,6 +64,19 @@ docs = [
     "myst-parser>=3.0",
 ]
 mat = ["scipy"]
+all = [
+   "build",
+    "twine",
+    "ruff",
+    "ty",
+    "pytest",
+    "pytest-cov",
+    "sphinx>=7.0",
+    "sphinx-book-theme>=1.1",
+    "sphinx-autodoc-typehints>=2.0",
+    "myst-parser>=3.0",
+    "scipy",
+]
 
 [tool.setuptools.packages.find]
 include = ["tecio*"]
