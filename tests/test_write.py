@@ -1379,7 +1379,7 @@ class TestWritePolyZone:
 
         Demonstrates:
         - ``write_poly_zone`` call structure: ``zone_type``, ``data``, and the face map
-          ``face_nodes``/``face_left``/``face_right``
+          ``face_nodes``/``face_left_elements``/``face_right_elements``
         - A polygon face is an edge with 2 nodes, so no ``face_node_counts`` is given
         - 0-based indices, with ``-1`` for no element on that side of a face
         """
@@ -1392,8 +1392,8 @@ class TestWritePolyZone:
                 data=[x, y],
                 variables=["x", "y"],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 title="Poly_Octagon",
             )
 
@@ -1405,8 +1405,8 @@ class TestWritePolyZone:
             assert zone.zone_type == ZoneType.FEPOLYGON
             assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (8, 1, 8)
             np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
             np.testing.assert_allclose(zone.variables[0].values, x, rtol=_rtol(fmt, x))
 
     def test_write_poly_two_cells(self, fmt: str, output_path: Callable) -> None:
@@ -1419,16 +1419,16 @@ class TestWritePolyZone:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
             zone = r.zones[0]
             assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (6, 2, 7)
             np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
             # The reader reports 2 nodes for every polygon face.
             np.testing.assert_array_equal(zone.face_node_counts, 2)
 
@@ -1445,16 +1445,16 @@ class TestWritePolyZone:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
             zone = r.zones[0]
             assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (15, 7, 21)
             np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
             np.testing.assert_array_equal(zone.variables[0].values, x)
 
     def test_write_poly_golden_spiral(self, fmt: str, output_path: Callable) -> None:
@@ -1467,16 +1467,16 @@ class TestWritePolyZone:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
             zone = r.zones[0]
             assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (12, 5, 16)
             np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
 
     def test_write_poly_bconn(self, fmt: str, output_path: Callable) -> None:
         """Two FEPOLYGON zones joined by connected boundary faces.
@@ -1485,7 +1485,7 @@ class TestWritePolyZone:
         - ``boundary_connection_counts``/``_elements``/``_zones`` on the second zone,
           which points at elements of zone 0 (TecIO only accepts connections to a zone
           that is already written)
-        - ``face_right`` values ``-2`` and ``-3`` reference boundary faces 0 and 1
+        - ``face_right_elements`` values ``-2`` and ``-3`` reference boundary faces 0 and 1
         """
         fx, fy, ffaces, fleft, fright = create_poly_bconn_fine()
         cx, cy, cfaces, cleft, cright, counts, elems, zones = create_poly_bconn_coarse()
@@ -1496,15 +1496,15 @@ class TestWritePolyZone:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[fx, fy],
                 face_nodes=ffaces,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYGON,
                 data=[cx, cy],
                 face_nodes=cfaces,
-                face_left=cleft,
-                face_right=cright,
+                face_left_elements=cleft,
+                face_right_elements=cright,
                 boundary_connection_counts=counts,
                 boundary_connection_elements=elems,
                 boundary_connection_zones=zones,
@@ -1521,7 +1521,7 @@ class TestWritePolyZone:
             )
             assert coarse.num_boundary_faces == 2
             assert coarse.num_boundary_connections == 4
-            np.testing.assert_array_equal(coarse.face_right, cright)
+            np.testing.assert_array_equal(coarse.face_right_elements, cright)
             np.testing.assert_array_equal(coarse.boundary_connection_counts, counts)
             np.testing.assert_array_equal(coarse.boundary_connection_elements, elems)
             np.testing.assert_array_equal(coarse.boundary_connection_zones, zones)
@@ -1543,8 +1543,8 @@ class TestWritePolyZone:
                 variables=["x", "y", "z"],
                 face_nodes=nodes,
                 face_node_counts=counts,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 title="Poly_Cube",
             )
 
@@ -1555,8 +1555,8 @@ class TestWritePolyZone:
             np.testing.assert_array_equal(zone.face_nodes, nodes)
             np.testing.assert_array_equal(zone.face_node_counts, counts)
             np.testing.assert_array_equal(zone.face_node_offsets, 4 * np.arange(7))
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
             np.testing.assert_array_equal(zone.variables[2].values, z)
 
     def test_write_polyhedron_cube_pair(self, fmt: str, output_path: Callable) -> None:
@@ -1570,8 +1570,8 @@ class TestWritePolyZone:
                 data=[x, y, z],
                 face_nodes=nodes,
                 face_node_counts=counts,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
@@ -1579,8 +1579,8 @@ class TestWritePolyZone:
             assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (12, 2, 11)
             np.testing.assert_array_equal(zone.face_nodes, nodes)
             np.testing.assert_array_equal(zone.face_node_counts, counts)
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
 
     def test_write_polyhedron_mixed_faces(
         self, fmt: str, output_path: Callable
@@ -1595,8 +1595,8 @@ class TestWritePolyZone:
                 data=[x, y, z],
                 face_nodes=nodes,
                 face_node_counts=counts,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
@@ -1605,8 +1605,8 @@ class TestWritePolyZone:
             assert set(zone.face_node_counts.tolist()) == {3, 4, 6}
             np.testing.assert_array_equal(zone.face_nodes, nodes)
             np.testing.assert_array_equal(zone.face_node_counts, counts)
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
             np.testing.assert_allclose(zone.variables[0].values, x, rtol=_rtol(fmt, x))
 
     def test_write_polyhedron_hanging_columns(
@@ -1622,8 +1622,8 @@ class TestWritePolyZone:
                 data=[x, y, z],
                 face_nodes=nodes,
                 face_node_counts=counts,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
@@ -1631,8 +1631,8 @@ class TestWritePolyZone:
             assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (22, 5, 25)
             np.testing.assert_array_equal(zone.face_nodes, nodes)
             np.testing.assert_array_equal(zone.face_node_counts, counts)
-            np.testing.assert_array_equal(zone.face_left, left)
-            np.testing.assert_array_equal(zone.face_right, right)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
 
     def test_write_polyhedron_bconn(self, fmt: str, output_path: Callable) -> None:
         """Two FEPOLYHEDRON zones joined by one boundary face with four connections."""
@@ -1648,16 +1648,16 @@ class TestWritePolyZone:
                 data=[fx, fy, fz],
                 face_nodes=fnodes,
                 face_node_counts=fcounts,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYHEDRON,
                 data=[cx, cy, cz],
                 face_nodes=cnodes,
                 face_node_counts=ccounts,
-                face_left=cleft,
-                face_right=cright,
+                face_left_elements=cleft,
+                face_right_elements=cright,
                 boundary_connection_counts=bcounts,
                 boundary_connection_elements=belems,
                 boundary_connection_zones=bzones,
@@ -1673,7 +1673,7 @@ class TestWritePolyZone:
             )
             assert coarse.num_boundary_faces == 1
             assert coarse.num_boundary_connections == 4
-            np.testing.assert_array_equal(coarse.face_right, cright)
+            np.testing.assert_array_equal(coarse.face_right_elements, cright)
             np.testing.assert_array_equal(coarse.boundary_connection_counts, bcounts)
             np.testing.assert_array_equal(coarse.boundary_connection_elements, belems)
             np.testing.assert_array_equal(coarse.boundary_connection_zones, bzones)
@@ -1700,8 +1700,8 @@ class TestWritePolyZone:
                     ValueLocation.CELL_CENTERED,
                 ],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
@@ -1720,8 +1720,8 @@ class TestWritePolyZone:
                     zone_type=ZoneType.FEPOLYGON,
                     data=[x, y],
                     face_nodes=faces,
-                    face_left=left,
-                    face_right=right,
+                    face_left_elements=left,
+                    face_right_elements=right,
                 )
 
         with tecio.open(str(path), "r") as r:
@@ -1743,8 +1743,8 @@ class TestWritePolyZone:
                 data=[x, y],
                 face_nodes=faces,
                 face_node_counts=np.full(8, 2),
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
@@ -1762,8 +1762,8 @@ class TestWritePolyZone:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 solution_time=0.5,
                 strand_id=1,
                 aux={"Key": "value"},
@@ -1794,15 +1794,15 @@ class TestWritePolyZone:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
         with tecio.open(str(path), "r") as r:
             assert isinstance(r.zones[0], tecio.TecplotFEZoneReader)
             assert isinstance(r.zones[1], tecio.TecplotPolyZoneReader)
             np.testing.assert_array_equal(r.zones[0].node_map, nodes.astype(np.int64))
-            np.testing.assert_array_equal(r.zones[1].face_left, left)
+            np.testing.assert_array_equal(r.zones[1].face_left_elements, left)
 
 
 @pytest.mark.parametrize("fmt", POLY_FORMATS)
@@ -1830,8 +1830,8 @@ class TestWritePolySharing:
                 data=[x, y, z, f],
                 face_nodes=nodes,
                 face_node_counts=counts,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 passive_vars={"q"},
             )
             w.write_poly_zone(
@@ -1849,8 +1849,8 @@ class TestWritePolySharing:
             assert second.num_faces == first.num_faces == 11
             np.testing.assert_array_equal(second.face_nodes, nodes)
             np.testing.assert_array_equal(second.face_node_counts, counts)
-            np.testing.assert_array_equal(second.face_left, left)
-            np.testing.assert_array_equal(second.face_right, right)
+            np.testing.assert_array_equal(second.face_left_elements, left)
+            np.testing.assert_array_equal(second.face_right_elements, right)
             assert first.variables["x"].shared_zone is None
             assert second.variables["x"].shared_zone == 0
             assert second.variables["q"].is_passive()
@@ -1877,23 +1877,23 @@ class TestWritePolyAppend:
                 data=[ox, oy],
                 variables=["x", "y"],
                 face_nodes=ofaces,
-                face_left=oleft,
-                face_right=oright,
+                face_left_elements=oleft,
+                face_right_elements=oright,
             )
         with tecio.open(str(path), "a") as w:
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYGON,
                 data=[tx, ty],
                 face_nodes=tfaces,
-                face_left=tleft,
-                face_right=tright,
+                face_left_elements=tleft,
+                face_right_elements=tright,
             )
 
         with tecio.open(str(path), "r") as r:
             assert r.num_zones == 2
             np.testing.assert_array_equal(r.zones[0].face_nodes, ofaces.ravel())
             np.testing.assert_array_equal(r.zones[1].face_nodes, tfaces.ravel())
-            np.testing.assert_array_equal(r.zones[1].face_right, tright)
+            np.testing.assert_array_equal(r.zones[1].face_right_elements, tright)
 
     def test_append_read_write_reads_existing_zone(
         self, fmt: str, output_path: Callable
@@ -1908,8 +1908,8 @@ class TestWritePolyAppend:
                 data=[x, y, z],
                 face_nodes=nodes,
                 face_node_counts=counts,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
         with tecio.open(str(path), "a+") as rw:
             zone = rw.zones[0]
@@ -1928,15 +1928,15 @@ class TestWritePolyAppend:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[fx, fy],
                 face_nodes=ffaces,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYGON,
                 data=[cx, cy],
                 face_nodes=cfaces,
-                face_left=cleft,
-                face_right=cright,
+                face_left_elements=cleft,
+                face_right_elements=cright,
                 boundary_connection_counts=counts,
                 boundary_connection_elements=elems,
                 boundary_connection_zones=zones,
@@ -1947,8 +1947,8 @@ class TestWritePolyAppend:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[fx, fy],
                 face_nodes=ffaces,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYGON,
@@ -2002,15 +2002,19 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FETRIANGLE,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
     def test_missing_face_arrays(self, path: Path) -> None:
         """Every zone that is not sharing connectivity needs the three face arrays."""
         x, y, faces, left, right = create_poly_octagon()
-        for omit in ("face_nodes", "face_left", "face_right"):
-            arrays = {"face_nodes": faces, "face_left": left, "face_right": right}
+        for omit in ("face_nodes", "face_left_elements", "face_right_elements"):
+            arrays = {
+                "face_nodes": faces,
+                "face_left_elements": left,
+                "face_right_elements": right,
+            }
             del arrays[omit]
             with (
                 pytest.raises(ValueError, match="required"),
@@ -2029,8 +2033,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYHEDRON,
                 data=[x, y, z],
                 face_nodes=nodes,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
     def test_polygon_counts_must_be_two(self, path: Path) -> None:
@@ -2045,8 +2049,8 @@ class TestWritePolyErrors:
                 data=[x, y],
                 face_nodes=faces,
                 face_node_counts=np.full(8, 3),
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
     def test_size_mismatches(self, path: Path) -> None:
@@ -2055,10 +2059,10 @@ class TestWritePolyErrors:
         arrays = {
             "face_nodes": nodes,
             "face_node_counts": counts,
-            "face_left": left,
-            "face_right": right,
+            "face_left_elements": left,
+            "face_right_elements": right,
         }
-        for key in ("face_right", "face_node_counts", "face_nodes"):
+        for key in ("face_right_elements", "face_node_counts", "face_nodes"):
             short = {**arrays, key: arrays[key][:-1]}
             with (
                 pytest.raises(ValueError, match=f"{key} has"),
@@ -2081,8 +2085,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
     def test_non_integer_indices(self, path: Path) -> None:
@@ -2096,8 +2100,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces.astype(float),
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
     def test_no_element_referenced(self, path: Path) -> None:
@@ -2112,8 +2116,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=none,
-                face_right=none,
+                face_left_elements=none,
+                face_right_elements=none,
             )
 
     def test_boundary_reference_without_boundary_faces(self, path: Path) -> None:
@@ -2129,8 +2133,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
     def test_boundary_arrays_must_come_together(self, path: Path) -> None:
@@ -2144,8 +2148,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 boundary_connection_counts=counts,
                 boundary_connection_elements=elems,
             )
@@ -2167,8 +2171,8 @@ class TestWritePolyErrors:
                     zone_type=ZoneType.FEPOLYGON,
                     data=[x, y],
                     face_nodes=faces,
-                    face_left=left,
-                    face_right=right,
+                    face_left_elements=left,
+                    face_right_elements=right,
                     boundary_connection_counts=bcounts,
                     boundary_connection_elements=belems,
                     boundary_connection_zones=bzones,
@@ -2191,8 +2195,8 @@ class TestWritePolyErrors:
                     zone_type=ZoneType.FEPOLYGON,
                     data=[x, y],
                     face_nodes=faces,
-                    face_left=left,
-                    face_right=right,
+                    face_left_elements=left,
+                    face_right_elements=right,
                     boundary_connection_counts=counts,
                     boundary_connection_elements=elems,
                     boundary_connection_zones=bzones,
@@ -2209,8 +2213,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 boundary_connection_counts=counts,
                 boundary_connection_elements=elems,
                 boundary_connection_zones=np.zeros_like(zones),  # this zone itself
@@ -2230,15 +2234,15 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[fx, fy],
                 face_nodes=ffaces,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 boundary_connection_counts=counts,
                 boundary_connection_elements=elems,
                 boundary_connection_zones=zones,
@@ -2256,8 +2260,8 @@ class TestWritePolyErrors:
                     zone_type=ZoneType.FEPOLYGON,
                     data=[x, y],
                     face_nodes=faces,
-                    face_left=left,
-                    face_right=right,
+                    face_left_elements=left,
+                    face_right_elements=right,
                     con_sharing=con_sharing,
                 )
 
@@ -2283,8 +2287,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYHEDRON, data=[x, y], con_sharing=0
@@ -2308,15 +2312,15 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[fx, fy],
                 face_nodes=ffaces,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 boundary_connection_counts=counts,
                 boundary_connection_elements=elems,
                 boundary_connection_zones=zones,
@@ -2345,8 +2349,8 @@ class TestWritePolyErrors:
                     data=data,
                     value_locations=locations,
                     face_nodes=faces,
-                    face_left=left,
-                    face_right=right,
+                    face_left_elements=left,
+                    face_right_elements=right,
                 )
 
     def test_all_variables_shared_warns_and_skips(
@@ -2362,8 +2366,8 @@ class TestWritePolyErrors:
                 data=[x, y],
                 variables=["x", "y"],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
             with pytest.warns(tecio.EmptyZoneWarning):
                 w.write_poly_zone(
@@ -2387,8 +2391,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 datapacking="POINT",
             )
 
@@ -2403,8 +2407,8 @@ class TestWritePolyErrors:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
                 datapacking="X",
             )
 
@@ -2423,8 +2427,8 @@ class TestWritePolySzl:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
 
     def test_write_fe_zone_points_to_write_poly_zone(
@@ -2457,8 +2461,8 @@ class TestWritePolyDat:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
         with tecio.open(str(polyhedron), "w") as w:
             w.write_poly_zone(
@@ -2466,16 +2470,16 @@ class TestWritePolyDat:
                 data=[fx, fy, fz],
                 face_nodes=fnodes,
                 face_node_counts=fcounts,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYHEDRON,
                 data=[cx, cy, cz],
                 face_nodes=cnodes,
                 face_node_counts=ccounts,
-                face_left=cleft,
-                face_right=cright,
+                face_left_elements=cleft,
+                face_right_elements=cright,
                 boundary_connection_counts=bcounts,
                 boundary_connection_elements=belems,
                 boundary_connection_zones=bzones,
@@ -2508,8 +2512,8 @@ class TestWritePolyDat:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
-                face_right=right,
+                face_left_elements=left,
+                face_right_elements=right,
             )
         with tecio.open(str(polyhedron), "w") as w:
             w.write_poly_zone(
@@ -2517,8 +2521,8 @@ class TestWritePolyDat:
                 data=[cx, cy, cz],
                 face_nodes=nodes,
                 face_node_counts=counts,
-                face_left=cleft,
-                face_right=cright,
+                face_left_elements=cleft,
+                face_right_elements=cright,
             )
 
         text = polygon.read_text()
@@ -2539,15 +2543,15 @@ class TestWritePolyDat:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[fx, fy],
                 face_nodes=ffaces,
-                face_left=fleft,
-                face_right=fright,
+                face_left_elements=fleft,
+                face_right_elements=fright,
             )
             w.write_poly_zone(
                 zone_type=ZoneType.FEPOLYGON,
                 data=[cx, cy],
                 face_nodes=cfaces,
-                face_left=cleft,
-                face_right=cright,
+                face_left_elements=cleft,
+                face_right_elements=cright,
                 boundary_connection_counts=counts,
                 boundary_connection_elements=elems,
                 boundary_connection_zones=zones,
@@ -2570,7 +2574,7 @@ class TestWritePolyDat:
                 zone_type=ZoneType.FEPOLYGON,
                 data=[x, y],
                 face_nodes=faces,
-                face_left=left,
+                face_left_elements=left,
             )
         assert not path.exists()
 

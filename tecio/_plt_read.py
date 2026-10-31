@@ -959,8 +959,8 @@ class _PltParser:
             else:
                 take("face_node_offsets", nf + 1)
         take("face_nodes", meta.total_face_nodes)
-        take("face_left", nf)
-        take("face_right", nf)
+        take("face_left_elements", nf)
+        take("face_right_elements", nf)
 
         if meta.boundary_table_entries > 0:
             take("boundary_offsets", meta.boundary_table_entries + 1)

@@ -938,15 +938,16 @@ class TecplotFEZoneReader(TecplotZoneReader):
 PolyArrayKey: TypeAlias = Literal[
     "face_node_counts",
     "face_nodes",
-    "face_left",
-    "face_right",
+    "face_left_elements",
+    "face_right_elements",
     "boundary_connection_counts",
     "boundary_connection_elements",
     "boundary_connection_zones",
 ]
 
-# Reference value for "no element" in ``face_left``/``face_right``. Values at or below
-# ``BOUNDARY_REF_BASE`` reference boundary face ``BOUNDARY_REF_BASE - value``.
+# Reference value for "no element" in ``face_left_elements`` and
+# ``face_right_elements``. Values at or below ``BOUNDARY_REF_BASE`` reference boundary
+# face ``BOUNDARY_REF_BASE - value``.
 NO_ELEMENT: Final = -1
 BOUNDARY_REF_BASE: Final = -2
 
@@ -965,7 +966,7 @@ class TecplotPolyZoneReader(TecplotZoneReader):
     nodes and the elements on its left and right. All indices are 0-based. The face
     arrays are flat and are returned as stored in the file, never split per element.
 
-    ``face_left`` and ``face_right`` hold, for each face:
+    ``face_left_elements`` and ``face_right_elements`` hold, for each face:
 
     * ``>= 0``: the 0-based element index.
     * ``-1`` (:data:`NO_ELEMENT`): no element on that side (a domain boundary).
@@ -1094,7 +1095,11 @@ class TecplotPolyZoneReader(TecplotZoneReader):
             f"{self.zone_type.name}:{self._num_nodes}:{self._num_elements}:"
             f"{self._num_faces}".encode()
         )
-        keys: tuple[PolyArrayKey, ...] = ("face_nodes", "face_left", "face_right")
+        keys: tuple[PolyArrayKey, ...] = (
+            "face_nodes",
+            "face_left_elements",
+            "face_right_elements",
+        )
         if self.zone_type is ZoneType.FEPOLYHEDRON:
             keys = ("face_node_counts", *keys)
         for key in keys:
@@ -1151,14 +1156,14 @@ class TecplotPolyZoneReader(TecplotZoneReader):
         return self._array("face_nodes")
 
     @property
-    def face_left(self) -> npt.NDArray[np.int64]:
+    def face_left_elements(self) -> npt.NDArray[np.int64]:
         """Element on the left of each face, shape ``(num_faces,)``, see class doc."""
-        return self._array("face_left")
+        return self._array("face_left_elements")
 
     @property
-    def face_right(self) -> npt.NDArray[np.int64]:
+    def face_right_elements(self) -> npt.NDArray[np.int64]:
         """Element on the right of each face, shape ``(num_faces,)``, see class doc."""
-        return self._array("face_right")
+        return self._array("face_right_elements")
 
     @property
     def boundary_connection_counts(self) -> npt.NDArray[np.int64]:

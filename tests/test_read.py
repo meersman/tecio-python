@@ -626,7 +626,7 @@ class TestReadPoly:
         Demonstrates:
         - ``face_nodes`` is flat and ``face_node_counts`` gives the nodes of each face
         - ``face_node_offsets`` has ``num_faces + 1`` entries and slices ``face_nodes``
-        - ``face_left``/``face_right`` are element indices, ``-1`` for no element
+        - ``face_left_elements``/``face_right_elements`` are element indices, ``-1`` for no element
         """
         with tecio.open(str(sphere_file), "r") as r:
             zone = r.zones[0]
@@ -658,7 +658,7 @@ class TestReadPoly:
                 nodes[offsets[1] : offsets[2]], [2033, 398, 391, 2027]
             )
 
-            left, right = zone.face_left, zone.face_right
+            left, right = zone.face_left_elements, zone.face_right_elements
             assert left.shape == right.shape == (7238,)
             np.testing.assert_array_equal(left[:10], [0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
             np.testing.assert_array_equal(left[-5:], [1366, 1367, 1368, 1374, 1376])
@@ -673,7 +673,7 @@ class TestReadPoly:
         """Every element is a closed polyhedron, so the face map must add up."""
         with tecio.open(str(sphere_file), "r") as r:
             zone = r.zones[0]
-            left, right = zone.face_left, zone.face_right
+            left, right = zone.face_left_elements, zone.face_right_elements
 
             # Left elements are always set, right elements are -1 on the 330 faces
             # that lie on the outer surface.
@@ -733,7 +733,12 @@ def test_read_poly_plt_matches_dat(tests_dir: Path) -> None:
         tecio.open(str(tests_dir / "Sphere.dat"), "r") as dat,
     ):
         a, b = plt.zones[0], dat.zones[0]
-        for name in ("face_nodes", "face_node_counts", "face_left", "face_right"):
+        for name in (
+            "face_nodes",
+            "face_node_counts",
+            "face_left_elements",
+            "face_right_elements",
+        ):
             np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
         for name in plt.variables:
             np.testing.assert_allclose(a.get_array(name), b.get_array(name), rtol=1e-8)

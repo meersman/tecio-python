@@ -1340,8 +1340,8 @@ def _face_map_of(zone: TecplotPolyZoneReader) -> dict[str, npt.NDArray[np.int64]
     """Return the face-map arrays of an already parsed poly zone."""
     face_map = {
         "face_nodes": zone.face_nodes,
-        "face_left": zone.face_left,
-        "face_right": zone.face_right,
+        "face_left_elements": zone.face_left_elements,
+        "face_right_elements": zone.face_right_elements,
     }
     if zone.zone_type is ZoneType.FEPOLYHEDRON:
         face_map["face_node_counts"] = zone.face_node_counts
@@ -2036,8 +2036,8 @@ class TecplotDatReader(TecplotReader):
             face_map["face_nodes"] = section("face nodes", total_face_nodes, 1)
         else:
             face_map["face_nodes"] = section("face nodes", 2 * num_faces, 1)
-        face_map["face_left"] = section("left elements", num_faces, 1)
-        face_map["face_right"] = section("right elements", num_faces, 1)
+        face_map["face_left_elements"] = section("left elements", num_faces, 1)
+        face_map["face_right_elements"] = section("right elements", num_faces, 1)
         if num_boundary_faces:
             face_map["boundary_connection_counts"] = section(
                 "boundary connection counts", num_boundary_faces

@@ -389,9 +389,9 @@ class AppendWrite:
             face_nodes (array-like | None): Flat node indices of all faces.
             face_node_counts (array-like | None): Nodes per face. Required for
                 polyhedra, optional for polygons (always 2).
-            face_left (array-like | None): Element left of each face, ``-1`` for none,
-                ``-(b + 2)`` for boundary face ``b``.
-            face_right (array-like | None): Element right of each face.
+            face_left_elements (array-like | None): Element left of each face, ``-1``
+                for none, ``-(b + 2)`` for boundary face ``b``.
+            face_right_elements (array-like | None): Element right of each face.
             boundary_connection_counts (array-like | None): Connections per boundary
                 face.
             boundary_connection_elements (array-like | None): Flat neighbor elements.

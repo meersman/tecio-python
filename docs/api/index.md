@@ -122,7 +122,7 @@ of which of the three file formats produced or is producing the data. See
 | {class}`~tecio.TecplotZoneReader` | Shared zone interface: title, type, solution time, strand ID, variables, aux data |
 | {class}`~tecio.TecplotOrderedZoneReader` | Adds `I`/`J`/`K`/`dimensions` for IJK-ordered zones |
 | {class}`~tecio.TecplotFEZoneReader` | Adds `node_map`/`nodes_per_cell`/`shared_connectivity` for finite-element zones |
-| {class}`~tecio.TecplotPolyZoneReader` | Adds the face map (`face_nodes`, `face_left`, `face_right`, boundary connections) for polygon and polyhedron zones |
+| {class}`~tecio.TecplotPolyZoneReader` | Adds the face map (`face_nodes`, `face_left_elements`, `face_right_elements`, boundary connections) for polygon and polyhedron zones |
 | {class}`~tecio.TecplotVariableReader` | One variable's metadata and data within a zone |
 | {class}`~tecio.TecplotAuxDataReader` | Read-only, dict-like view of one auxiliary-data mapping |
 
@@ -182,7 +182,9 @@ name-based and slice-based access:
 
 ```python
 with tecio.open("flow.szplt") as r:
-    r.zones[0]  # -> TecplotOrderedZoneReader, TecplotFEZoneReader, or TecplotPolyZoneReader
+    r.zones[
+        0
+    ]  # -> TecplotOrderedZoneReader, TecplotFEZoneReader, or TecplotPolyZoneReader
     r.zones[1:4]  # -> ZoneList (sub-range, same kind)
     r.zones[0].variables  # -> VariableList
     r.zones[0].variables["x"]  # -> TecplotVariableReader, by exact name

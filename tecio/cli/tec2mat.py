@@ -86,9 +86,10 @@ Output structure:
           .num_faces              double  poly only
           .face_node_counts       array   poly only, nodes per face
           .face_nodes             array   poly only, flat 1-based node numbers
-          .face_left              array   poly only, 1-based element, 0 = none,
+          .face_left_elements     array   poly only, 1-based element, 0 = none,
                                           -k = k-th boundary face
-          .face_right             array   poly only, same convention as face_left
+          .face_right_elements    array   poly only, same convention as
+                                          face_left_elements
           .boundary_connection_counts    array  poly only, per boundary face
           .boundary_connection_elements  array  poly only, 1-based element numbers
           .boundary_connection_zones     array  poly only, 1-based zone numbers
@@ -315,8 +316,8 @@ def _add_poly_face_map(d: dict[str, Any], zone: TecplotPolyZoneReader) -> None:
     d["face_node_counts"] = np.asarray(zone.face_node_counts)
     d["face_nodes"] = np.asarray(zone.face_nodes) + 1
     # A uniform +1 maps -1 (none) to 0 and -(b + 2) to -(b + 1), the on-disk values.
-    d["face_left"] = np.asarray(zone.face_left) + 1
-    d["face_right"] = np.asarray(zone.face_right) + 1
+    d["face_left_elements"] = np.asarray(zone.face_left_elements) + 1
+    d["face_right_elements"] = np.asarray(zone.face_right_elements) + 1
     if zone.num_boundary_faces > 0:
         d["boundary_connection_counts"] = np.asarray(zone.boundary_connection_counts)
         d["boundary_connection_elements"] = (

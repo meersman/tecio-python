@@ -802,8 +802,8 @@ class TecplotPltWriter(TecplotWriter):
         *,
         face_nodes: npt.ArrayLike | None = None,
         face_node_counts: npt.ArrayLike | None = None,
-        face_left: npt.ArrayLike | None = None,
-        face_right: npt.ArrayLike | None = None,
+        face_left_elements: npt.ArrayLike | None = None,
+        face_right_elements: npt.ArrayLike | None = None,
         boundary_connection_counts: npt.ArrayLike | None = None,
         boundary_connection_elements: npt.ArrayLike | None = None,
         boundary_connection_zones: npt.ArrayLike | None = None,
@@ -844,11 +844,12 @@ class TecplotPltWriter(TecplotWriter):
             face_node_counts (npt.ArrayLike):
                 Number of nodes of each face. Required for FEPOLYHEDRON. Optional for
                 FEPOLYGON, where every face has 2 nodes.
-            face_left (npt.ArrayLike):
+            face_left_elements (npt.ArrayLike):
                 Element on the left of each face: a 0-based element index, ``-1`` for
                 no element, or ``-(b + 2)`` for boundary face ``b`` (0-based).
-            face_right (npt.ArrayLike):
-                Element on the right of each face, same convention as ``face_left``.
+            face_right_elements (npt.ArrayLike):
+                Element on the right of each face, same convention as
+                ``face_left_elements``.
             boundary_connection_counts (npt.ArrayLike):
                 Number of connections of each boundary face. Boundary faces describe
                 neighbors in other zones, or faces with more than one neighbor.
@@ -934,8 +935,8 @@ class TecplotPltWriter(TecplotWriter):
             zone_type,
             face_nodes=face_nodes,
             face_node_counts=face_node_counts,
-            face_left=face_left,
-            face_right=face_right,
+            face_left_elements=face_left_elements,
+            face_right_elements=face_right_elements,
             boundary_connection_counts=boundary_connection_counts,
             boundary_connection_elements=boundary_connection_elements,
             boundary_connection_zones=boundary_connection_zones,
@@ -989,13 +990,16 @@ class TecplotPltWriter(TecplotWriter):
         # convention shifted by one for every array.
         if prepared.con_sharing is None:
             assert conn.face_nodes is not None
-            assert conn.face_left is not None and conn.face_right is not None
+            assert (
+                conn.face_left_elements is not None
+                and conn.face_right_elements is not None
+            )
             # Polygon: counts are NULL, every face is a two node edge.
             libtecio.tecpolyface142(
                 conn.face_node_counts,
                 conn.face_nodes.astype(np.int32) + 1,
-                conn.face_left.astype(np.int32) + 1,
-                conn.face_right.astype(np.int32) + 1,
+                conn.face_left_elements.astype(np.int32) + 1,
+                conn.face_right_elements.astype(np.int32) + 1,
                 num_faces=conn.num_faces,
             )
             if conn.num_boundary_faces:

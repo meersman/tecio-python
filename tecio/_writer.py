@@ -1025,8 +1025,8 @@ class _PolyConnectivity:
     num_boundary_connections: int
     face_node_counts: npt.NDArray | None
     face_nodes: npt.NDArray | None
-    face_left: npt.NDArray | None
-    face_right: npt.NDArray | None
+    face_left_elements: npt.NDArray | None
+    face_right_elements: npt.NDArray | None
     boundary_connection_counts: npt.NDArray | None
     boundary_connection_elements: npt.NDArray | None
     boundary_connection_zones: npt.NDArray | None
@@ -1127,29 +1127,29 @@ def _check_poly_connectivity(
     zone_type: ZoneType,
     face_nodes: npt.ArrayLike | None,
     face_node_counts: npt.ArrayLike | None,
-    face_left: npt.ArrayLike | None,
-    face_right: npt.ArrayLike | None,
+    face_left_elements: npt.ArrayLike | None,
+    face_right_elements: npt.ArrayLike | None,
     boundary_connection_counts: npt.ArrayLike | None,
     boundary_connection_elements: npt.ArrayLike | None,
     boundary_connection_zones: npt.ArrayLike | None,
     meta: WriterMeta,
 ) -> _PolyConnectivity:
     """Validate the face map of a poly zone that owns its connectivity."""
-    if face_nodes is None or face_left is None or face_right is None:
+    if face_nodes is None or face_left_elements is None or face_right_elements is None:
         raise ValueError(
-            "face_nodes, face_left and face_right are required unless connectivity "
-            "is shared from another zone via con_sharing."
+            "face_nodes, face_left_elements and face_right_elements are required "
+            "unless connectivity is shared from another zone via con_sharing."
         )
     nodes = _as_index_array(face_nodes, "face_nodes")
-    left = _as_index_array(face_left, "face_left")
-    right = _as_index_array(face_right, "face_right")
+    left = _as_index_array(face_left_elements, "face_left_elements")
+    right = _as_index_array(face_right_elements, "face_right_elements")
     num_faces = left.size
     if num_faces == 0:
         raise ValueError("A poly zone needs at least one face.")
     if right.size != num_faces:
         raise ValueError(
-            f"face_right has {right.size} entries, expected one per face "
-            f"({num_faces}, the length of face_left)."
+            f"face_right_elements has {right.size} entries, expected one per face "
+            f"({num_faces}, the length of face_left_elements)."
         )
 
     counts: npt.NDArray | None = None
@@ -1184,7 +1184,9 @@ def _check_poly_connectivity(
 
     top = max(int(left.max()), int(right.max()))
     if top < 0:
-        raise ValueError("No face references an element in face_left/face_right.")
+        raise ValueError(
+            "No face references an element in face_left_elements/face_right_elements."
+        )
     num_cells = top + 1
 
     bcounts, belems, bzones = _check_boundary_arrays(
@@ -1195,12 +1197,13 @@ def _check_poly_connectivity(
         meta=meta,
     )
     num_boundary_faces = 0 if bcounts is None else bcounts.size
-    # Boundary references in face_left/face_right are -(b + 2) for boundary face b.
+    # Boundary references in the left/right element arrays are -(b + 2) for boundary
+    # face b.
     lowest = min(int(left.min()), int(right.min()))
     if lowest < -1 and -2 - lowest >= num_boundary_faces:
         raise ValueError(
-            f"face_left/face_right reference boundary face {-2 - lowest}, but only "
-            f"{num_boundary_faces} boundary faces are defined."
+            "face_left_elements/face_right_elements reference boundary face "
+            f"{-2 - lowest}, but only {num_boundary_faces} boundary faces are defined."
         )
     return _PolyConnectivity(
         num_nodes=int(nodes.max()) + 1,
@@ -1211,8 +1214,8 @@ def _check_poly_connectivity(
         num_boundary_connections=0 if belems is None else belems.size,
         face_node_counts=counts,
         face_nodes=nodes,
-        face_left=left,
-        face_right=right,
+        face_left_elements=left,
+        face_right_elements=right,
         boundary_connection_counts=bcounts,
         boundary_connection_elements=belems,
         boundary_connection_zones=bzones,
@@ -1249,8 +1252,8 @@ def _shared_poly_connectivity(
         num_boundary_connections=src.num_boundary_connections or 0,
         face_node_counts=None,
         face_nodes=None,
-        face_left=None,
-        face_right=None,
+        face_left_elements=None,
+        face_right_elements=None,
         boundary_connection_counts=None,
         boundary_connection_elements=None,
         boundary_connection_zones=None,
@@ -1264,8 +1267,8 @@ def prepare_poly_zone(
     *,
     face_nodes: npt.ArrayLike | None,
     face_node_counts: npt.ArrayLike | None,
-    face_left: npt.ArrayLike | None,
-    face_right: npt.ArrayLike | None,
+    face_left_elements: npt.ArrayLike | None,
+    face_right_elements: npt.ArrayLike | None,
     boundary_connection_counts: npt.ArrayLike | None,
     boundary_connection_elements: npt.ArrayLike | None,
     boundary_connection_zones: npt.ArrayLike | None,
@@ -1291,9 +1294,9 @@ def prepare_poly_zone(
         face_nodes: Flat 0-based node indices of all faces.
         face_node_counts: Nodes per face, required for FEPOLYHEDRON. Optional for
             FEPOLYGON, where every face has 2 nodes.
-        face_left: Element on the left of each face (0-based, -1 for none, -(b + 2)
-            for boundary face b).
-        face_right: Same for the right side.
+        face_left_elements: Element on the left of each face (0-based, -1 for none,
+            -(b + 2) for boundary face b).
+        face_right_elements: Same for the right side.
         boundary_connection_counts: Connections per boundary face.
         boundary_connection_elements: Flat 0-based neighbor elements.
         boundary_connection_zones: Flat 0-based zone of each neighbor element.
@@ -1327,8 +1330,8 @@ def prepare_poly_zone(
             given = (
                 face_nodes,
                 face_node_counts,
-                face_left,
-                face_right,
+                face_left_elements,
+                face_right_elements,
                 boundary_connection_counts,
                 boundary_connection_elements,
                 boundary_connection_zones,
@@ -1344,8 +1347,8 @@ def prepare_poly_zone(
                 zone_type,
                 face_nodes,
                 face_node_counts,
-                face_left,
-                face_right,
+                face_left_elements,
+                face_right_elements,
                 boundary_connection_counts,
                 boundary_connection_elements,
                 boundary_connection_zones,
@@ -1448,8 +1451,8 @@ def poly_face_kwargs(zone: TecplotPolyZoneReader) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "face_nodes": zone.face_nodes,
         "face_node_counts": zone.face_node_counts,
-        "face_left": zone.face_left,
-        "face_right": zone.face_right,
+        "face_left_elements": zone.face_left_elements,
+        "face_right_elements": zone.face_right_elements,
     }
     if zone.num_boundary_faces:
         kwargs["boundary_connection_counts"] = zone.boundary_connection_counts
@@ -1665,8 +1668,8 @@ class TecplotWriter(ABC):
         *,
         face_nodes: npt.ArrayLike | None = None,
         face_node_counts: npt.ArrayLike | None = None,
-        face_left: npt.ArrayLike | None = None,
-        face_right: npt.ArrayLike | None = None,
+        face_left_elements: npt.ArrayLike | None = None,
+        face_right_elements: npt.ArrayLike | None = None,
         boundary_connection_counts: npt.ArrayLike | None = None,
         boundary_connection_elements: npt.ArrayLike | None = None,
         boundary_connection_zones: npt.ArrayLike | None = None,

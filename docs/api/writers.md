@@ -137,7 +137,7 @@ too, plus:
 | `zone_type` | `ZoneType` | required | ✗ | ✓ | ✓ |
 | `face_nodes` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
 | `face_node_counts` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
-| `face_left`, `face_right` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
+| `face_left_elements`, `face_right_elements` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
 | `boundary_connection_counts` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
 | `boundary_connection_elements` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
 | `boundary_connection_zones` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
@@ -146,7 +146,7 @@ too, plus:
 
 Note that all face connectivity arrays use 0-baesd node and element indices,
 consistently with the node connectivity and face neighbors for classical
-finite-element zones. 1D arrays for `face_left`/`face_right` are required to
+finite-element zones. 1D arrays for `face_left_elements`/`face_right_elements` are required to
 indicate the element on each side of a face. An edge cell face with no
 neighbor should use `-1`, and `-(b + 2)` to point at boundary face `b`, which
 is described by the three boundary arrays.  `face_node_counts` is required for

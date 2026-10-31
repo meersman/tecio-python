@@ -118,7 +118,7 @@ Face arrays are returned as stored on disk, 0-based:
 | `face_node_counts` | Nodes per face (all `2` for polygons) |
 | `face_node_offsets` | `len(face_nodes)` offsets, length `num_faces + 1` |
 | `face_nodes` | Flat 0-based node indices of every face |
-| `face_left`, `face_right` | 0-based element per face; `-1` = none, `-(b + 2)` = boundary face `b` |
+| `face_left_elements`, `face_right_elements` | 0-based element per face; `-1` = none, `-(b + 2)` = boundary face `b` |
 | `boundary_connection_counts` | Connections per boundary face |
 | `boundary_connection_elements` | 0-based elements in other zones or with several neighbors |
 | `boundary_connection_zones` | 0-based zone of each connection |
