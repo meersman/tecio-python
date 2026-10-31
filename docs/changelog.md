@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tecpolybconn142` wrapper argument types (boundary connection zones are
   INT32 values).
 - PLT v111 zone header: the extra INT32 follows the zone type.
+- The ParaView reader plugin now follows the 0-indexed API (variable
+  auxiliary data and connectivity were off by one, which made it fail on
+  every file).
+- The ParaView writer plugin could not be loaded by ParaView because a
+  `@dataclass` failed at import, and it lacked the `Write()` method and input
+  type that ParaView requires of a writer. Failures in the writer now report an
+  error to ParaView instead of success. Unnamed blocks are labeled
+  `Zone 0`, `Zone 1`, ... to match the 0-indexed API.
 
 ---
 

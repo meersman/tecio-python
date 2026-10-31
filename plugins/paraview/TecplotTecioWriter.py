@@ -8,19 +8,27 @@ output format is chosen by the saved file's extension.
 Output structure
     The input may be a single ``vtkDataSet`` or a ``vtkMultiBlockDataSet``; every leaf
     block becomes one Tecplot zone, named after the block's composite-data name (or
-    ``"Zone <n>"`` if unnamed). Geometry is mapped per block:
+    ``"Zone <n>"``, counting from 0, if unnamed). Geometry is mapped per block:
 
     * ``vtkStructuredGrid``, ``vtkRectilinearGrid``, and ``vtkImageData`` become
       ``ORDERED`` (IJK) zones.
     * ``vtkPolyData`` and ``vtkUnstructuredGrid`` (and any other dataset exposing
-      explicit points and cells) become classic finite-element zones -- line,
-      triangle, quadrilateral, tetrahedron, or brick -- one per VTK cell type present.
-      A block mixing cell types (e.g. a surface with both triangles and quads) is
-      split into one zone per type, each zone keeping only the points its own cells
-      reference.
-    * Any other cell type (polygon, polyhedron, triangle strip, vertex, wedge,
-      pyramid, ...) is not representable by a classic Tecplot zone and is skipped with
-      a printed warning -- the rest of the block is still written.
+      explicit points and cells) become finite-element zones, one per VTK cell type
+      present: line, triangle, quadrilateral, tetrahedron, and hexahedron cells give
+      classic ``FELINESEG``/``FETRIANGLE``/``FEQUADRILATERAL``/``FETETRAHEDRON``/
+      ``FEBRICK`` zones, ``VTK_POLYGON`` cells give an ``FEPOLYGON`` zone, and
+      ``VTK_POLYHEDRON`` cells give an ``FEPOLYHEDRON`` zone. A block mixing cell types
+      (e.g. a surface with both triangles and polygons) is split into one zone per
+      type, each zone keeping only the points its own cells reference.
+    * Any other cell type (triangle strip, vertex, wedge, pyramid, ...) is not
+      representable by these zone types and is skipped with a printed warning -- the
+      rest of the block is still written.
+    * Polygon and polyhedron zones are stored face by face, each face with the one or
+      two elements on its sides, so the faces are matched up between neighboring
+      cells. Polyhedron faces are turned to point out of their cell (using the sign of
+      its volume), and polygons are turned counterclockwise when all the points have
+      the same ``z``. Polygon and polyhedron zones can be saved to ``.plt`` and
+      ``.dat`` files, not yet ``.szplt``.
 
 Coordinates
     The first three dataset variables are always named ``x``, ``y``, ``z`` and
@@ -59,12 +67,18 @@ Known limitations (first pass)
       pipeline's time steps itself; ParaView's own "write a file per time step"
       animation/file-series mechanism, where supported by the installed ParaView
       version, is the way to export a transient pipeline through this writer.
-    * Polygonal/polyhedral zones (``FEPOLYGON``/``FEPOLYHEDRON``) are not produced,
-      because ``tecio``'s Write API does not yet support them; polygon, triangle-strip,
-      vertex, wedge, and pyramid cells are skipped rather than approximated.
+    * Triangle-strip, vertex, wedge, and pyramid cells are skipped rather than
+      approximated. A polygon edge or polyhedron face shared by more than two cells
+      cannot be stored, and the cells of that type in that block are skipped.
     * Points not referenced by any kept cell are dropped from their zone rather than
       written as isolated, cell-less nodes (classic Tecplot FE zones have no concept
       of an unused node).
+
+Indexing
+    ``tecio``'s Python API is 0-based, so an unnamed block is titled ``"Zone <n>"``
+    counting from 0 and variable-level aux data is keyed by 0-based variable index.
+    Values that Tecplot defines as 1-based in the file (``Common.XVar``/``YVar``/
+    ``ZVar``/``UVar``/``VVar``/``WVar``) are still written as 1-based variable numbers.
 
 Requirements
     The ``tecio`` package must be importable from the same Python interpreter ParaView
@@ -75,7 +89,6 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -83,10 +96,12 @@ import numpy.typing as npt
 from paraview.util.vtkAlgorithm import smdomain, smproperty, smproxy
 from vtkmodules.util import numpy_support
 from vtkmodules.util.vtkAlgorithm import VTKPythonAlgorithmBase
-from vtkmodules.vtkCommonCore import vtkStringArray
+from vtkmodules.vtkCommonCore import vtkDataArray, vtkIdList, vtkStringArray
 from vtkmodules.vtkCommonDataModel import (
     VTK_HEXAHEDRON,
     VTK_LINE,
+    VTK_POLYGON,
+    VTK_POLYHEDRON,
     VTK_QUAD,
     VTK_TETRA,
     VTK_TRIANGLE,
@@ -99,7 +114,9 @@ from vtkmodules.vtkCommonDataModel import (
     vtkPointSet,
     vtkRectilinearGrid,
     vtkStructuredGrid,
+    vtkUnstructuredGrid,
 )
+from vtkmodules.vtkFiltersCore import vtkAppendFilter
 
 # Same escape hatch as TecplotTecioReader: ParaView's bundled Python can't have tecio
 # installed into its own write-protected site-packages, so point at a local install
@@ -125,8 +142,9 @@ except Exception as exc:  # pragma: no cover - environment-dependent  # noqa: BL
 _EXTENSIONS = "szplt plt bin dat tec"
 _FILE_DESCRIPTION = "Tecplot 360 Data Files"
 
-# Maps a VTK cell type to the classic Tecplot zone type it becomes. Only
-# fixed-size, single-shape cell types are representable; anything else is skipped.
+# Maps a VTK cell type to the Tecplot zone type it becomes. Fixed-size, single-shape
+# cells become classic finite-element zones, polygons and polyhedra become face-based
+# zones; anything else is skipped.
 _ZONE_TYPE_FOR_VTK_CELL: dict[int, Any] = (
     {
         VTK_LINE: ZoneType.FELINESEG,
@@ -134,10 +152,21 @@ _ZONE_TYPE_FOR_VTK_CELL: dict[int, Any] = (
         VTK_QUAD: ZoneType.FEQUADRILATERAL,
         VTK_TETRA: ZoneType.FETETRAHEDRON,
         VTK_HEXAHEDRON: ZoneType.FEBRICK,
+        VTK_POLYGON: ZoneType.FEPOLYGON,
+        VTK_POLYHEDRON: ZoneType.FEPOLYHEDRON,
     }
     if tecio is not None
     else {}
 )
+
+# Number of nodes per cell of the classic types
+_NODES_PER_CELL: dict[int, int] = {
+    VTK_LINE: 2,
+    VTK_TRIANGLE: 3,
+    VTK_QUAD: 4,
+    VTK_TETRA: 4,
+    VTK_HEXAHEDRON: 8,
+}
 
 _COMPONENT_SUFFIXES: dict[int, tuple[str, ...]] = {2: ("X", "Y"), 3: ("X", "Y", "Z")}
 
@@ -225,16 +254,40 @@ def _split_variable_aux(
 # --------------------------------------------------------------------------------------
 
 
-@dataclass
 class _ZoneBuild:
-    """Everything needed to emit one Tecplot zone via the ``tecio`` Write API."""
+    """Everything needed to emit one Tecplot zone via the ``tecio`` Write API.
 
-    title: str
-    zone_type: Any | None  # ZoneType, or None for an ORDERED zone
-    dims: tuple[int, int, int] | None  # (imax, jmax, kmax), ORDERED zones only
-    node_map: npt.NDArray[np.int64] | None  # FE zones only
-    arrays: dict[str, tuple[npt.NDArray, Any]] = field(default_factory=dict)
-    aux: dict[str, str] = field(default_factory=dict)
+    A plain class rather than a dataclass: ParaView executes a plugin file before
+    registering it in ``sys.modules``, and ``dataclasses`` looks the defining module up
+    there, so a ``@dataclass`` makes the whole plugin fail to load.
+
+    Attributes:
+        title: Zone title.
+        zone_type: ``ZoneType`` of a finite-element or face-based zone, or ``None``
+            for an ORDERED zone.
+        dims: ``(imax, jmax, kmax)``, ORDERED zones only.
+        node_map: 0-based node map, classic finite-element zones only.
+        face_map: Keyword arguments for ``write_poly_zone`` that describe the faces,
+            polygon and polyhedron zones only.
+        arrays: Variable name -> ``(values, value_location)``.
+        aux: Zone-level auxiliary data.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        zone_type: Any | None,
+        dims: tuple[int, int, int] | None = None,
+        node_map: npt.NDArray[np.int64] | None = None,
+        face_map: dict[str, npt.NDArray[np.int64]] | None = None,
+    ) -> None:
+        self.title = title
+        self.zone_type = zone_type
+        self.dims = dims
+        self.node_map = node_map
+        self.face_map = face_map
+        self.arrays: dict[str, tuple[npt.NDArray, Any]] = {}
+        self.aux: dict[str, str] = {}
 
 
 def _decompose_array(arr: Any, flatten: Any) -> list[tuple[str, npt.NDArray]] | None:
@@ -317,7 +370,7 @@ def _build_ordered_zone(
     x, y, z = _structured_coordinates(dataset, dims)
     cell_dims = tuple(max(n - 1, 1) for n in dims)
 
-    zone = _ZoneBuild(title=title, zone_type=None, dims=dims, node_map=None)
+    zone = _ZoneBuild(title, None, dims=dims)
     zone.arrays["x"] = (x, ValueLocation.NODAL)
     zone.arrays["y"] = (y, ValueLocation.NODAL)
     zone.arrays["z"] = (z, ValueLocation.NODAL)
@@ -342,73 +395,344 @@ def _build_ordered_zone(
     return zone
 
 
-def _group_cells_by_type(
-    dataset: vtkDataSet,
-) -> dict[int, tuple[list[int], list[tuple[int, ...]]]]:
-    """Bucket every cell by VTK cell type -> ``(cell_indices, node_id_rows)``.
+def _as_unstructured_grid(dataset: vtkPointSet) -> vtkUnstructuredGrid:
+    """Return *dataset* as a ``vtkUnstructuredGrid`` (converted if it is not one)."""
+    if isinstance(dataset, vtkUnstructuredGrid):
+        return dataset
+    append = vtkAppendFilter()  # keeps every point and the cell order
+    append.AddInputData(dataset)
+    append.Update()
+    return append.GetOutput()
 
-    ``cell_indices`` are 0-based indices into the dataset's own cell numbering (for
-    subsetting cell-data arrays); ``node_id_rows`` are tuples of 0-based *global*
-    point ids (for subsetting point-data arrays and building the node map).
+
+def _cell_type_array(grid: vtkUnstructuredGrid) -> npt.NDArray[np.int64]:
+    """Return the VTK cell type of every cell of *grid*."""
+    types: Any = None
+    get_types = getattr(grid, "GetCellTypes", None)  # VTK 9.6+, no arguments
+    if get_types is not None:
+        try:
+            types = get_types()
+        except TypeError:
+            types = None
+    if not isinstance(types, vtkDataArray):
+        types = grid.GetCellTypesArray()
+    if types is None:  # pragma: no cover - defensive, depends on VTK version
+        return np.array(
+            [grid.GetCellType(i) for i in range(grid.GetNumberOfCells())],
+            dtype=np.int64,
+        )
+    return numpy_support.vtk_to_numpy(types).astype(np.int64, copy=False)
+
+
+def _cell_connectivity(
+    grid: vtkUnstructuredGrid,
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """Return the CSR ``(offsets, point_ids)`` of *grid*'s cells."""
+    cells = grid.GetCells()
+    offsets = numpy_support.vtk_to_numpy(cells.GetOffsetsArray())
+    connectivity = numpy_support.vtk_to_numpy(cells.GetConnectivityArray())
+    return offsets.astype(np.int64, copy=False), connectivity.astype(
+        np.int64, copy=False
+    )
+
+
+def _gather_ranges(
+    starts: npt.NDArray[np.int64], counts: npt.NDArray[np.int64]
+) -> npt.NDArray[np.int64]:
+    """Return ``concat(arange(s, s + c) for s, c in zip(starts, counts))``."""
+    total = int(counts.sum())
+    first = np.cumsum(counts) - counts
+    return np.arange(total) - np.repeat(first - starts, counts)
+
+
+def _reverse_ranges(
+    starts: npt.NDArray[np.int64], counts: npt.NDArray[np.int64]
+) -> npt.NDArray[np.int64]:
+    """Return ``concat(arange(s + c - 1, s - 1, -1))`` for each ``(s, c)``."""
+    total = int(counts.sum())
+    first = np.cumsum(counts) - counts
+    return np.repeat(starts + counts - 1 + first, counts) - np.arange(total)
+
+
+def _csr_offsets(counts: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
+    offsets = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
+    return offsets
+
+
+def _next_in_loop(offsets: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
+    """Return, for each node of CSR loops, the position of the next node in its loop."""
+    following = np.arange(offsets[-1]) + 1
+    nonempty = offsets[1:] > offsets[:-1]
+    following[offsets[1:][nonempty] - 1] = offsets[:-1][nonempty]
+    return following
+
+
+def _polygon_face_map(
+    offsets: npt.NDArray[np.int64],
+    nodes: npt.NDArray[np.int64],
+    points: npt.NDArray[np.float64],
+) -> dict[str, npt.NDArray[np.int64]]:
+    """Build the edge-based face map of a polygon zone from its node loops.
+
+    Every polygon edge shared by two cells becomes one face whose left element is the
+    first cell that uses it and whose right element is the other cell. When all points
+    share one ``z`` the loops are first turned counterclockwise, which makes the left
+    element really lie on the left of the edge's direction; otherwise each loop keeps
+    the winding it has.
+
+    Args:
+        offsets: CSR offsets of each cell's loop in *nodes*.
+        nodes: Concatenated 0-based node loops.
+        points: ``(n, 3)`` coordinates indexed by node.
+
+    Returns:
+        ``face_nodes`` (flat, two per face), ``face_left``, and ``face_right`` (``-1``
+        for none), in terms of the node ids in *nodes*.
+
+    Raises:
+        ValueError: If an edge is used by more than two cells.
     """
-    buckets: dict[int, tuple[list[int], list[tuple[int, ...]]]] = {}
-    for i in range(dataset.GetNumberOfCells()):
-        cell = dataset.GetCell(i)
-        ids = cell.GetPointIds()
-        row = tuple(ids.GetId(j) for j in range(ids.GetNumberOfIds()))
-        cell_indices, node_rows = buckets.setdefault(cell.GetCellType(), ([], []))
-        cell_indices.append(i)
-        node_rows.append(row)
-    return buckets
+    counts = np.diff(offsets)
+    cell = np.repeat(np.arange(len(counts)), counts)
+    if len(points) and np.ptp(points[:, 2]) == 0.0:
+        x, y = points[nodes, 0], points[nodes, 1]
+        following = _next_in_loop(offsets)
+        area = np.bincount(cell, weights=x * y[following] - x[following] * y)
+        flip = (area < 0)[cell]
+        index = np.where(
+            flip, _reverse_ranges(offsets[:-1], counts), np.arange(nodes.size)
+        )
+        nodes = nodes[index]
+
+    following = _next_in_loop(offsets)
+    a, b = nodes, nodes[following]
+    width = int(nodes.max()) + 1 if nodes.size else 1
+    key = np.minimum(a, b) * width + np.maximum(a, b)
+    order = np.argsort(key, kind="stable")
+    sorted_key = key[order]
+    starts = np.flatnonzero(np.r_[True, sorted_key[1:] != sorted_key[:-1]])
+    sizes = np.diff(np.r_[starts, len(order)])
+    if sizes.size and sizes.max() > 2:
+        raise ValueError("a polygon edge is shared by more than two cells")
+
+    left_edge = order[starts]
+    right_edge = np.where(sizes == 2, order[np.minimum(starts + 1, len(order) - 1)], -1)
+    arrange = np.argsort(left_edge, kind="stable")
+    left_edge, right_edge = left_edge[arrange], right_edge[arrange]
+    return {
+        "face_nodes": np.column_stack((a[left_edge], b[left_edge])).ravel(),
+        "face_left": cell[left_edge],
+        "face_right": np.where(right_edge >= 0, cell[np.maximum(right_edge, 0)], -1),
+    }
+
+
+def _polyhedron_cell_faces(
+    grid: vtkUnstructuredGrid, cell_ids: npt.NDArray[np.int64]
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """Return the faces of the polyhedral cells *cell_ids* of *grid*.
+
+    Returns:
+        ``(faces_per_cell, nodes_per_face, nodes)`` with the faces of each cell listed
+        in cell order and each face's nodes concatenated in ``nodes``.
+    """
+    faces = getattr(grid, "GetPolyhedronFaces", lambda: None)()
+    locations = getattr(grid, "GetPolyhedronFaceLocations", lambda: None)()
+    if faces is not None and locations is not None and locations.GetNumberOfCells():
+        face_off = numpy_support.vtk_to_numpy(faces.GetOffsetsArray()).astype(np.int64)
+        face_conn = numpy_support.vtk_to_numpy(faces.GetConnectivityArray()).astype(
+            np.int64
+        )
+        loc_off = numpy_support.vtk_to_numpy(locations.GetOffsetsArray()).astype(
+            np.int64
+        )
+        loc_conn = numpy_support.vtk_to_numpy(locations.GetConnectivityArray()).astype(
+            np.int64
+        )
+        per_cell = loc_off[cell_ids + 1] - loc_off[cell_ids]
+        face_ids = loc_conn[_gather_ranges(loc_off[cell_ids], per_cell)]
+        per_face = face_off[face_ids + 1] - face_off[face_ids]
+        return (
+            per_cell,
+            per_face,
+            face_conn[_gather_ranges(face_off[face_ids], per_face)],
+        )
+
+    # Older VTK: one face stream, [nfaces, n0, ids..., n1, ids..., ...], per cell.
+    per_cell = np.zeros(len(cell_ids), dtype=np.int64)
+    per_face_list: list[int] = []
+    node_list: list[int] = []
+    stream = vtkIdList()
+    for i, cell_id in enumerate(cell_ids.tolist()):
+        grid.GetFaceStream(cell_id, stream)
+        ids = [stream.GetId(j) for j in range(stream.GetNumberOfIds())]
+        per_cell[i] = ids[0]
+        pos = 1
+        for _ in range(ids[0]):
+            n = ids[pos]
+            per_face_list.append(n)
+            node_list.extend(ids[pos + 1 : pos + 1 + n])
+            pos += n + 1
+    return (
+        per_cell,
+        np.asarray(per_face_list, dtype=np.int64),
+        np.asarray(node_list, dtype=np.int64),
+    )
+
+
+def _polyhedron_face_map(
+    per_cell: npt.NDArray[np.int64],
+    per_face: npt.NDArray[np.int64],
+    nodes: npt.NDArray[np.int64],
+    points: npt.NDArray[np.float64],
+) -> dict[str, npt.NDArray[np.int64]]:
+    """Build the face map of a polyhedron zone from each cell's own face list.
+
+    A face listed by two cells is stored once, with the first cell as its left element
+    (the face's right-hand-rule normal points out of the left element) and the second
+    as its right element. A cell whose faces enclose a negative volume is listed
+    inside out in VTK, and is turned around first so every face points outward.
+
+    Args:
+        per_cell: Number of faces of each cell.
+        per_face: Number of nodes of each listed face.
+        nodes: Concatenated 0-based nodes of the listed faces.
+        points: ``(n, 3)`` coordinates indexed by node.
+
+    Returns:
+        ``face_nodes`` (flat), ``face_node_counts``, ``face_left`` and ``face_right``
+        (``-1`` for none), in terms of the node ids in *nodes*.
+
+    Raises:
+        ValueError: If a face is listed by more than two cells.
+    """
+    cell = np.repeat(np.arange(len(per_cell)), per_cell)
+    face_start = _csr_offsets(per_face)[:-1]
+
+    # Signed volume of each cell from its faces, by the divergence theorem.
+    owner = np.repeat(np.arange(len(per_face)), per_face)
+    following = _next_in_loop(_csr_offsets(per_face))
+    p = points[nodes] - points[nodes].mean(axis=0)
+    area = 0.5 * np.add.reduceat(np.cross(p, p[following]), face_start, axis=0)
+    volume = np.bincount(cell, weights=np.einsum("ij,ij->i", p[face_start], area) / 3.0)
+    flip = (volume < 0)[cell]
+    if flip.any():
+        index = np.where(
+            flip[owner],
+            _reverse_ranges(face_start, per_face),
+            np.arange(nodes.size),
+        )
+        nodes = nodes[index]
+
+    # Match each face with the same node set listed by another cell.
+    left = np.empty(0, dtype=np.int64)
+    right = np.empty(0, dtype=np.int64)
+    for size in np.unique(per_face):
+        listed = np.flatnonzero(per_face == size)
+        rows = nodes[face_start[listed][:, None] + np.arange(size)]
+        rows.sort(axis=1)
+        keys = (
+            np
+            .ascontiguousarray(rows)
+            .view(np.dtype((np.void, rows.dtype.itemsize * int(size))))
+            .ravel()
+        )
+        _, inverse, repeats = np.unique(keys, return_inverse=True, return_counts=True)
+        if repeats.max() > 2:
+            raise ValueError("a polyhedron face is shared by more than two cells")
+        order = np.argsort(inverse, kind="stable")
+        group = np.flatnonzero(np.r_[True, np.diff(inverse[order]) != 0])
+        first = order[group]
+        second = np.where(
+            repeats == 2, order[np.minimum(group + 1, len(order) - 1)], -1
+        )
+        left = np.concatenate((left, listed[first]))
+        right = np.concatenate((
+            right,
+            np.where(second >= 0, listed[np.maximum(second, 0)], -1),
+        ))
+
+    arrange = np.argsort(left, kind="stable")
+    left, right = left[arrange], right[arrange]
+    counts = per_face[left]
+    return {
+        "face_nodes": nodes[_gather_ranges(face_start[left], counts)],
+        "face_node_counts": counts,
+        "face_left": cell[left],
+        "face_right": np.where(right >= 0, cell[np.maximum(right, 0)], -1),
+    }
 
 
 def _build_fe_zones(title: str, dataset: vtkPointSet) -> list[_ZoneBuild]:
-    """Build one classic FE zone per supported VTK cell type found in *dataset*.
+    """Build one finite-element or face-based zone per supported cell type in *dataset*.
 
     A block containing only one supported cell type yields a single zone named
-    *title*; a block mixing types (e.g. triangles and quads on one surface) yields
+    *title*; a block mixing types (e.g. triangles and polygons on one surface) yields
     one zone per type, suffixed with the Tecplot zone type name so each is
-    identifiable. Unsupported cell types (polygon, triangle strip, vertex, wedge,
-    pyramid, ...) are skipped with a printed warning.
+    identifiable. Unsupported cell types (triangle strip, vertex, wedge, pyramid,
+    ...) are skipped with a printed warning.
     """
-    buckets = _group_cells_by_type(dataset)
-    points = numpy_support.vtk_to_numpy(dataset.GetPoints().GetData())
-    point_data, cell_data = dataset.GetPointData(), dataset.GetCellData()
+    grid = _as_unstructured_grid(dataset)
+    types = _cell_type_array(grid)
+    offsets, connectivity = _cell_connectivity(grid)
+    points = numpy_support.vtk_to_numpy(grid.GetPoints().GetData())
+    point_data, cell_data = grid.GetPointData(), grid.GetCellData()
     field_aux = _field_data_to_aux(dataset.GetFieldData())
 
-    supported = {
-        vt: rows for vt, rows in buckets.items() if vt in _ZONE_TYPE_FOR_VTK_CELL
-    }
-    unsupported = set(buckets) - set(supported)
-    for vt in sorted(unsupported):
+    present, first_seen = np.unique(types, return_index=True)
+    present = present[np.argsort(first_seen)]  # zones in order of first appearance
+    supported = [int(t) for t in present if int(t) in _ZONE_TYPE_FOR_VTK_CELL]
+    for vtk_type in sorted(int(t) for t in present if int(t) not in supported):
         print(
-            f"[TecplotTecioWriter] '{title}': skipping {len(buckets[vt][0])} cell(s) "
-            f"of unsupported VTK cell type {vt} (only line, triangle, quadrilateral, "
-            "tetrahedron, and hexahedron cells become Tecplot FE zones)."
+            f"[TecplotTecioWriter] '{title}': skipping {int((types == vtk_type).sum())} "
+            f"cell(s) of unsupported VTK cell type {vtk_type} (only line, triangle, "
+            "quadrilateral, tetrahedron, hexahedron, polygon, and polyhedron cells "
+            "become Tecplot zones)."
         )
 
     zones: list[_ZoneBuild] = []
     multiple = len(supported) > 1
-    for vtk_cell_type, (cell_indices, node_rows) in supported.items():
+    for vtk_cell_type in supported:
         zone_type = _ZONE_TYPE_FOR_VTK_CELL[vtk_cell_type]
         zone_title = f"{title} ({zone_type.name})" if multiple else title
+        cell_idx = np.flatnonzero(types == vtk_cell_type)
+        starts = offsets[cell_idx]
+        sizes = offsets[cell_idx + 1] - starts
 
-        global_ids = np.asarray(node_rows, dtype=np.int64)
-        unique_global, inverse = np.unique(global_ids, return_inverse=True)
-        node_map = inverse.reshape(global_ids.shape)
-        cell_idx = np.asarray(cell_indices, dtype=np.int64)
+        node_map: npt.NDArray[np.int64] | None = None
+        face_map: dict[str, npt.NDArray[np.int64]] | None = None
+        try:
+            if vtk_cell_type == VTK_POLYHEDRON:
+                per_cell, per_face, face_nodes = _polyhedron_cell_faces(grid, cell_idx)
+                used = np.unique(face_nodes)
+                face_map = _polyhedron_face_map(per_cell, per_face, face_nodes, points)
+            elif vtk_cell_type == VTK_POLYGON:
+                loops = connectivity[_gather_ranges(starts, sizes)]
+                used = np.unique(loops)
+                face_map = _polygon_face_map(_csr_offsets(sizes), loops, points)
+            else:
+                global_ids = connectivity[
+                    starts[:, None] + np.arange(_NODES_PER_CELL[vtk_cell_type])
+                ]
+                used = np.unique(global_ids)
+                node_map = np.searchsorted(used, global_ids)
+        except ValueError as exc:
+            print(
+                f"[TecplotTecioWriter] '{title}': skipping {zone_type.name} cells: {exc}."
+            )
+            continue
+        if face_map is not None:
+            face_map["face_nodes"] = np.searchsorted(used, face_map["face_nodes"])
 
         zone = _ZoneBuild(
-            title=zone_title, zone_type=zone_type, dims=None, node_map=node_map
+            title=zone_title, zone_type=zone_type, node_map=node_map, face_map=face_map
         )
-        local_points = points[unique_global]
+        local_points = points[used]
         zone.arrays["x"] = (local_points[:, 0].copy(), ValueLocation.NODAL)
         zone.arrays["y"] = (local_points[:, 1].copy(), ValueLocation.NODAL)
         zone.arrays["z"] = (local_points[:, 2].copy(), ValueLocation.NODAL)
 
-        def nodal(
-            values: npt.NDArray, _ids: npt.NDArray = unique_global
-        ) -> npt.NDArray:
+        def nodal(values: npt.NDArray, _ids: npt.NDArray = used) -> npt.NDArray:
             return values[_ids]
 
         def cell_centered(
@@ -450,7 +774,7 @@ def _iter_blocks(data: vtkDataObject) -> list[tuple[str, vtkDataSet]]:
     *data* may be a plain ``vtkDataSet`` (treated as a single block) or a
     (possibly nested) ``vtkMultiBlockDataSet``, whose leaves are visited via a
     composite-data iterator and named after their composite-data name, or
-    ``"Zone <n>"`` if unnamed.
+    ``"Zone <n>"`` (``n`` counting leaves from 0) if unnamed.
     """
     if isinstance(data, vtkMultiBlockDataSet):
         blocks: list[tuple[str, vtkDataSet]] = []
@@ -461,7 +785,6 @@ def _iter_blocks(data: vtkDataObject) -> list[tuple[str, vtkDataSet]]:
         n = 0
         while not it.IsDoneWithTraversal():
             block = it.GetCurrentDataObject()
-            n += 1
             if isinstance(block, vtkDataSet) and block.GetNumberOfPoints() > 0:
                 meta = it.GetCurrentMetaData()
                 name = (
@@ -470,10 +793,11 @@ def _iter_blocks(data: vtkDataObject) -> list[tuple[str, vtkDataSet]]:
                     else f"Zone {n}"
                 )
                 blocks.append((name, block))
+            n += 1
             it.GoToNextItem()
         return blocks
     if isinstance(data, vtkDataSet) and data.GetNumberOfPoints() > 0:
-        return [("Zone 1", data)]
+        return [("Zone 0", data)]
     return []
 
 
@@ -538,13 +862,8 @@ class TecplotWriter(VTKPythonAlgorithmBase):
 
     def __init__(self) -> None:
         """Initialize from VTK object."""
-        super().__init__(nInputPorts=1, nOutputPorts=0)
+        super().__init__(nInputPorts=1, nOutputPorts=0, inputType="vtkDataObject")
         self._filename: str | None = None
-
-    def FillInputPortInformation(self, port: int, info: Any) -> int:
-        """Accept any ``vtkDataObject`` so both plain and composite inputs connect."""
-        info.Set(self.INPUT_REQUIRED_DATA_TYPE(), "vtkDataObject")
-        return 1
 
     # -- FileName ------------------------------------------------------------------
 
@@ -557,7 +876,17 @@ class TecplotWriter(VTKPythonAlgorithmBase):
             self._filename = name
             self.Modified()
 
-    # -- Pipeline: RequestData ------------------------------------------------------
+    # -- Pipeline ---------------------------------------------------------------------
+
+    def Write(self) -> None:
+        """Run the pipeline so :meth:`RequestData` writes the file.
+
+        ParaView's writer proxy calls this method when "Save Data" is used. A writer
+        written with ``VTKPythonAlgorithmBase`` has no output port to pull on, so
+        without it nothing is ever executed.
+        """
+        self.Modified()
+        self.Update()
 
     def RequestData(self, request: Any, inInfoVec: Any, outInfoVec: Any) -> int:
         """Write the current input to :attr:`_filename`."""
@@ -569,10 +898,10 @@ class TecplotWriter(VTKPythonAlgorithmBase):
                 "via the TECIO_LIB environment variable) in the Python interpreter "
                 "ParaView uses, then reload this plugin."
             )
-            return 1
+            return 0
         if not self._filename:
             print("[TecplotTecioWriter] No output FileName set; nothing written.")
-            return 1
+            return 0
 
         input0 = self.GetInputData(inInfoVec, 0, 0)
         blocks = _iter_blocks(input0)
@@ -580,7 +909,7 @@ class TecplotWriter(VTKPythonAlgorithmBase):
             print(
                 f"[TecplotTecioWriter] '{self._filename}': input has no data to write."
             )
-            return 1
+            return 0
 
         zones: list[_ZoneBuild] = []
         for name, dataset in blocks:
@@ -590,7 +919,16 @@ class TecplotWriter(VTKPythonAlgorithmBase):
                 f"[TecplotTecioWriter] '{self._filename}': no zone could be built from "
                 "the input (see warnings above)."
             )
-            return 1
+            return 0
+        if self._filename.lower().endswith(".szplt") and any(
+            zone.face_map is not None for zone in zones
+        ):
+            print(
+                f"[TecplotTecioWriter] '{self._filename}': polygon and polyhedron "
+                "zones cannot be written to SZPLT files yet. Save as .plt or .dat "
+                "instead."
+            )
+            return 0
 
         var_names = _assemble_global_variables(zones)
         root_dataset_aux, root_var_aux = _split_variable_aux(
@@ -633,6 +971,13 @@ class TecplotWriter(VTKPythonAlgorithmBase):
                     }
                     if zone.zone_type is None:
                         writer.write_ordered_zone(data=data, **common_kw)
+                    elif zone.face_map is not None:
+                        writer.write_poly_zone(
+                            data=data,
+                            zone_type=zone.zone_type,
+                            **zone.face_map,
+                            **common_kw,
+                        )
                     else:
                         writer.write_fe_zone(
                             data=data,
@@ -646,6 +991,6 @@ class TecplotWriter(VTKPythonAlgorithmBase):
                 os.unlink(self._filename)
             except OSError:
                 pass
-            return 1
+            return 0
 
         return 1

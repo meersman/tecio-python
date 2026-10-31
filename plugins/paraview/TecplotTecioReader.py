@@ -11,8 +11,14 @@ Output structure
     * ``ORDERED`` zones become ``vtkStructuredGrid`` blocks.
     * Classic finite-element zones (line, triangle, quadrilateral, tetrahedron, brick)
       become ``vtkUnstructuredGrid`` blocks.
-    * ``FEPOLYGON``, ``FEPOLYHEDRON``, and ``FEMIXED`` zones are not yet supported and
-      are skipped with a printed warning.
+    * ``FEPOLYGON`` zones become ``vtkUnstructuredGrid`` blocks of ``VTK_POLYGON``
+      cells, and ``FEPOLYHEDRON`` zones become blocks of ``VTK_POLYHEDRON`` cells. The
+      face-based connectivity is converted per element: polygon edges are chained into
+      the element's node loop, and polyhedron faces are listed for each of the two
+      elements that share them (reversed for the right element) so every face points
+      out of its cell. Faces whose neighbor is another zone (boundary connections) are
+      treated as plain boundary faces.
+    * ``FEMIXED`` zones are not yet supported and are skipped with a printed warning.
     * A zone whose aux data marks it a non-``Wall`` boundary (see "Zone visibility"
       below) still becomes a block, but its entry in the ``Zones`` property defaults
       to unchecked, matching Tecplot's own default display convention.
@@ -65,16 +71,25 @@ Zone visibility
     not ``"Wall"``).
 
 Known limitations (first pass)
-    * ``FEPOLYGON`` / ``FEPOLYHEDRON`` / ``FEMIXED`` zones are skipped. Note that
-      ``tecio``'s ASCII DAT reader currently raises immediately on encountering one of
-      these zone types (rather than skipping just that zone), so a ``.dat`` file
-      containing one won't load at all through this reader until ``tecio`` supports it.
+    * ``FEMIXED`` zones are skipped. Polygon and polyhedron zones need a ``tecio``
+      that reads them (PLT and DAT files only; SZPLT files cannot hold them yet), and
+      are skipped with a printed warning when it does not.
+    * A polygon element is assumed to have its left face neighbors on the left of each
+      directed edge (counterclockwise). If an element's edges do not chain into one
+      closed loop, the loop is rebuilt without relying on edge direction.
     * SOLUTION-only files (grid coordinates stored in a separate, unopened GRID file)
       have no coordinate data to build geometry from and are not handled specially; they
       will fail coordinate resolution unless the variables happen to still be present.
-    * Face-based connectivity, custom labels, geometry/text annotations, and Tecplot's
-      classic-PLT auxiliary record types outside dataset/zone/ variable aux data are not
-      handled by ``tecio`` data readers.
+    * Boundary connections between zones, custom labels, geometry/text annotations,
+      and Tecplot's classic-PLT auxiliary record types outside dataset/zone/variable
+      aux data are not handled by ``tecio`` data readers.
+
+Indexing
+    ``tecio``'s Python API is 0-based, so zone titles that are missing fall back to
+    ``"Zone <zone_index>"`` counting from 0, and the ``Zones`` property keys are
+    ``"<zone_index>: <title>"``. File-level values that Tecplot defines as 1-based
+    (the ``Common.XVar``/``YVar``/``ZVar``/``UVar``/``VVar``/``WVar`` aux items) are
+    still read as 1-based variable numbers.
 
 Requirements
     The ``tecio`` package must be importable from the same Python interpreter ParaView
@@ -94,10 +109,18 @@ import numpy.typing as npt
 from paraview.util.vtkAlgorithm import smdomain, smhint, smproperty, smproxy
 from vtkmodules.util import numpy_support
 from vtkmodules.util.vtkAlgorithm import VTKPythonAlgorithmBase
-from vtkmodules.vtkCommonCore import vtkDataArraySelection, vtkPoints, vtkStringArray
+from vtkmodules.vtkCommonCore import (
+    vtkDataArraySelection,
+    vtkPoints,
+    vtkStringArray,
+    vtkUnsignedCharArray,
+)
 from vtkmodules.vtkCommonDataModel import (
+    VTK_EMPTY_CELL,
     VTK_HEXAHEDRON,
     VTK_LINE,
+    VTK_POLYGON,
+    VTK_POLYHEDRON,
     VTK_QUAD,
     VTK_TETRA,
     VTK_TRIANGLE,
@@ -126,10 +149,13 @@ try:
         ZoneType,
     )
 
+    # Polygon and polyhedron zone support is newer than the rest of the reader API.
+    TecplotPolyZoneReader = getattr(tecio, "TecplotPolyZoneReader", None)
     _TECIO_IMPORT_ERROR: Exception | None = None
 except Exception as exc:  # pragma: no cover - environment-dependent  # noqa: BLE001
     tecio = None  # ty: ignore[invalid-assignment]
     TecplotFEZoneReader = TecplotOrderedZoneReader = None  # ty: ignore[invalid-assignment]
+    TecplotPolyZoneReader = None  # ty: ignore[invalid-assignment]
     ValueLocation = ZoneType = None  # ty: ignore[invalid-assignment]
     _TECIO_IMPORT_ERROR = exc
 
@@ -338,6 +364,259 @@ def _add_aux_field_data(
         field_data.AddArray(arr)
 
 
+# --------------------------------------------------------------------------------------
+# Face-based connectivity (FEPOLYGON / FEPOLYHEDRON) -> VTK cells
+# --------------------------------------------------------------------------------------
+#
+# A poly zone stores faces, each with a left and right element index (all 0-based,
+# -1 for none, <= -2 for a connection to another zone). VTK instead wants every cell to
+# list its own nodes (polygon) or faces (polyhedron), so the face map is inverted below
+# with array operations only, no per-element Python loops.
+
+
+def _vtk_id_array(values: npt.ArrayLike) -> Any:
+    return numpy_support.numpy_to_vtkIdTypeArray(
+        np.ascontiguousarray(values, dtype=np.int64), deep=True
+    )
+
+
+def _vtk_cell_array(
+    offsets: npt.ArrayLike, connectivity: npt.ArrayLike
+) -> vtkCellArray:
+    cells = vtkCellArray()
+    cells.SetData(_vtk_id_array(offsets), _vtk_id_array(connectivity))
+    return cells
+
+
+def _cell_types(counts: npt.NDArray[np.int64], cell_type: int) -> Any:
+    """Per-cell type array: *cell_type*, or an empty cell for an element with no faces."""
+    types = np.where(counts > 0, cell_type, VTK_EMPTY_CELL).astype(np.uint8)
+    vtk_types = vtkUnsignedCharArray()
+    vtk_types.DeepCopy(numpy_support.numpy_to_vtk(types, deep=True))
+    return vtk_types
+
+
+def _chain_undirected(a: npt.NDArray, b: npt.NDArray) -> npt.NDArray[np.int64]:
+    """Order the edges ``(a[i], b[i])`` of one polygon into a node loop.
+
+    Used only for the rare element whose edges do not chain by direction. Falls back
+    to the edges' own order if they do not form one simple loop.
+    """
+    ends = list(zip(a.tolist(), b.tolist(), strict=True))
+    at_node: dict[int, list[int]] = {}
+    for i, (u, v) in enumerate(ends):
+        at_node.setdefault(u, []).append(i)
+        at_node.setdefault(v, []).append(i)
+    used = [False] * len(ends)
+    loop: list[int] = []
+    node = ends[0][0]
+    for _ in ends:
+        edge = next((i for i in at_node.get(node, ()) if not used[i]), None)
+        if edge is None:
+            break
+        used[edge] = True
+        loop.append(node)
+        u, v = ends[edge]
+        node = v if u == node else u
+    if len(loop) != len(ends):
+        return np.asarray(a, dtype=np.int64).copy()
+    return np.asarray(loop, dtype=np.int64)
+
+
+def _polygon_loops(
+    face_nodes: npt.ArrayLike,
+    face_left: npt.ArrayLike,
+    face_right: npt.ArrayLike,
+    num_elements: int,
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], int]:
+    """Chain a polygon zone's edges into one node loop per element.
+
+    The left element sees an edge in its stored direction (node 0 to node 1) and the
+    right element sees it reversed, so each element's edges link head to tail. Elements
+    are handled together: step ``k`` places the ``k``-th node of every element still
+    unfinished.
+
+    Args:
+        face_nodes: Two nodes per face, flat or shaped ``(num_faces, 2)``.
+        face_left: Left element per face (``< 0`` for none).
+        face_right: Right element per face (``< 0`` for none or another zone).
+        num_elements: Number of elements in the zone.
+
+    Returns:
+        ``(offsets, nodes, num_rebuilt)``: CSR offsets (length ``num_elements + 1``)
+        and the concatenated loops, plus how many elements needed the direction-free
+        rebuild.
+    """
+    edges = np.asarray(face_nodes, dtype=np.int64).reshape(-1, 2)
+    left = np.asarray(face_left, dtype=np.int64)
+    right = np.asarray(face_right, dtype=np.int64)
+    use_left, use_right = left >= 0, right >= 0
+    src = np.concatenate((edges[use_left, 0], edges[use_right, 1]))
+    dst = np.concatenate((edges[use_left, 1], edges[use_right, 0]))
+    elem = np.concatenate((left[use_left], right[use_right]))
+    order = np.argsort(elem, kind="stable")
+    src, dst, elem = src[order], dst[order], elem[order]
+
+    counts = np.bincount(elem, minlength=num_elements)
+    offsets = np.zeros(num_elements + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
+    if not src.size:
+        return offsets, src, 0
+
+    # Edge i is followed by the edge of the same element that starts where i ends.
+    width = int(max(src.max(), dst.max())) + 1
+    sort_key = np.argsort(elem * width + src, kind="stable")
+    sorted_keys = (elem * width + src)[sort_key]
+    wanted = elem * width + dst
+    pos = np.minimum(np.searchsorted(sorted_keys, wanted), len(sorted_keys) - 1)
+    linked = sorted_keys[pos] == wanted
+    following = sort_key[pos]
+
+    nodes = np.empty_like(src)
+    bad = np.zeros(num_elements, dtype=bool)
+    ids = np.flatnonzero(counts > 0)
+    first = offsets[ids]
+    cur = first.copy()
+    k = 0
+    while ids.size:
+        nodes[offsets[ids] + k] = src[cur]
+        bad[ids[~linked[cur]]] = True
+        cur = following[cur]
+        k += 1
+        done = counts[ids] == k
+        closed = cur == first
+        bad[ids[done != closed]] = True  # closed too early, or never closed
+        keep = ~done
+        ids, cur, first = ids[keep], cur[keep], first[keep]
+
+    rebuilt = np.flatnonzero(bad)
+    for e in rebuilt:
+        lo, hi = offsets[e], offsets[e + 1]
+        nodes[lo:hi] = _chain_undirected(src[lo:hi], dst[lo:hi])
+    return offsets, nodes, len(rebuilt)
+
+
+def _element_faces(
+    face_nodes: npt.ArrayLike,
+    face_node_counts: npt.ArrayLike,
+    face_left: npt.ArrayLike,
+    face_right: npt.ArrayLike,
+    num_elements: int,
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """List the faces of every polyhedral element, each pointing out of its element.
+
+    A face is outward for its left element as stored and for its right element
+    reversed, so a shared face appears twice, once per element.
+
+    Returns:
+        ``(faces_per_element, node_counts, nodes)``: the face count of each element,
+        the node count of each listed face, and all listed faces' nodes concatenated,
+        in element order.
+    """
+    nodes = np.asarray(face_nodes, dtype=np.int64)
+    counts = np.asarray(face_node_counts, dtype=np.int64)
+    left = np.asarray(face_left, dtype=np.int64)
+    right = np.asarray(face_right, dtype=np.int64)
+    starts = np.zeros(len(counts), dtype=np.int64)
+    np.cumsum(counts[:-1], out=starts[1:])
+
+    use_left, use_right = left >= 0, right >= 0
+    face = np.concatenate((np.flatnonzero(use_left), np.flatnonzero(use_right)))
+    elem = np.concatenate((left[use_left], right[use_right]))
+    reverse = np.concatenate((
+        np.zeros(use_left.sum(), dtype=bool),
+        np.ones(use_right.sum(), dtype=bool),
+    ))
+    order = np.argsort(elem, kind="stable")
+    face, elem, reverse = face[order], elem[order], reverse[order]
+
+    node_counts = counts[face]
+    owner = np.repeat(np.arange(len(face)), node_counts)
+    local = np.arange(owner.size) - np.repeat(
+        np.cumsum(node_counts) - node_counts, node_counts
+    )
+    source = np.where(
+        reverse[owner],
+        starts[face][owner] + node_counts[owner] - 1 - local,
+        starts[face][owner] + local,
+    )
+    faces_per_element = np.bincount(elem, minlength=num_elements)
+    return faces_per_element, node_counts, nodes[source]
+
+
+def _set_polyhedral_cells(
+    grid: vtkUnstructuredGrid,
+    face_nodes: npt.ArrayLike,
+    face_node_counts: npt.ArrayLike,
+    face_left: npt.ArrayLike,
+    face_right: npt.ArrayLike,
+    num_elements: int,
+    *,
+    legacy_face_stream: bool = False,
+) -> None:
+    """Fill *grid* with one ``VTK_POLYHEDRON`` cell per element of a face map.
+
+    VTK 9.2+ takes the faces as ``vtkCellArray`` objects; older versions take a
+    ``vtkIdTypeArray`` face stream (``[nfaces, n0, ids..., n1, ids..., ...]`` per cell).
+    The first form is tried unless *legacy_face_stream* is set (used by tests).
+    Elements without faces become empty cells so cell data stays aligned.
+    """
+    per_element, node_counts, nodes = _element_faces(
+        face_nodes, face_node_counts, face_left, face_right, num_elements
+    )
+    cell_types = _cell_types(per_element, VTK_POLYHEDRON)
+
+    # Unique points of each cell, which VTK stores alongside the faces.
+    owner = np.repeat(np.repeat(np.arange(num_elements), per_element), node_counts)
+    width = int(nodes.max()) + 1 if nodes.size else 1
+    unique = np.unique(owner * width + nodes)
+    point_counts = np.bincount(unique // width, minlength=num_elements)
+    point_offsets = np.zeros(num_elements + 1, dtype=np.int64)
+    np.cumsum(point_counts, out=point_offsets[1:])
+    cells = _vtk_cell_array(point_offsets, unique % width)
+
+    face_offsets = np.zeros(len(node_counts) + 1, dtype=np.int64)
+    np.cumsum(node_counts, out=face_offsets[1:])
+    cell_face_offsets = np.zeros(num_elements + 1, dtype=np.int64)
+    np.cumsum(per_element, out=cell_face_offsets[1:])
+
+    if not legacy_face_stream and hasattr(grid, "SetPolyhedralCells"):
+        try:
+            grid.SetPolyhedralCells(
+                cell_types,
+                cells,
+                _vtk_cell_array(cell_face_offsets, np.arange(len(node_counts))),
+                _vtk_cell_array(face_offsets, nodes),
+            )
+        except TypeError:
+            pass
+        else:
+            return
+
+    # Face stream: per cell [nfaces], then per face [count, ids...].
+    face_cell = np.repeat(np.arange(num_elements), per_element)
+    token_end = np.zeros(len(node_counts) + 1, dtype=np.int64)
+    np.cumsum(node_counts + 1, out=token_end[1:])
+    cell_len = 1 + np.diff(token_end[cell_face_offsets])
+    cell_start = np.cumsum(cell_len) - cell_len
+    stream = np.empty(int(cell_len.sum()), dtype=np.int64)
+    stream[cell_start] = per_element
+    face_pos = (
+        cell_start[face_cell]
+        + 1
+        + token_end[:-1]
+        - token_end[cell_face_offsets[:-1]][face_cell]
+    )
+    stream[face_pos] = node_counts
+    node_face = np.repeat(np.arange(len(node_counts)), node_counts)
+    node_pos = (
+        face_pos[node_face] + 1 + np.arange(nodes.size) - face_offsets[:-1][node_face]
+    )
+    stream[node_pos] = nodes
+    locations = np.where(per_element > 0, cell_start, -1)
+    grid.SetCells(cell_types, cells, _vtk_id_array(locations), _vtk_id_array(stream))
+
+
 # ======================================================================================
 # Reader
 # ======================================================================================
@@ -377,7 +656,7 @@ class TecplotReader(VTKPythonAlgorithmBase):
         self._array_selection = vtkDataArraySelection()
         self._array_selection.AddObserver("ModifiedEvent", _modified_callback(self))
 
-        # Keyed "<1-based zone index>: <title>" -> whether that zone/block loads.
+        # Keyed "<0-based zone index>: <title>" -> whether that zone/block loads.
         self._zone_selection = vtkDataArraySelection()
         self._zone_selection.AddObserver("ModifiedEvent", _modified_callback(self))
         self._zone_keys: dict[int, str] = {}
@@ -818,11 +1097,11 @@ class TecplotReader(VTKPythonAlgorithmBase):
     ) -> None:
         """Attach variable-level aux data to *field_data*, prefixed by variable name."""
         names = reader.variables
-        for i in range(1, reader.num_vars + 1):
+        for i in range(reader.num_vars):
             aux = reader.get_var_auxdata(i)
             if not len(aux):
                 continue
-            var_name = names[i - 1]
+            var_name = names[i]
             _add_aux_field_data(
                 field_data, aux.items(), key_fn=lambda k, v=var_name: f"{v}::{k}"
             )
@@ -842,8 +1121,8 @@ class TecplotReader(VTKPythonAlgorithmBase):
     ) -> vtkStructuredGrid | vtkUnstructuredGrid:
         """Convert one Tecplot zone into a VTK type.
 
-        Structured/Unstructured correspond to``vtkStructuredGrid``/
-        ``vtkUnstructuredGrid`` respectively.
+        ORDERED zones become a ``vtkStructuredGrid``. Finite-element, polygon, and
+        polyhedron zones become a ``vtkUnstructuredGrid``.
         """
         # By the time any zone is being converted, RequestData has already gone
         # through _get_reader(), which raises RuntimeError if tecio failed to
@@ -856,21 +1135,25 @@ class TecplotReader(VTKPythonAlgorithmBase):
             dataset: vtkStructuredGrid | vtkUnstructuredGrid = (
                 self._build_structured_grid(zone, x_name, y_name, z_name)
             )
+        elif TecplotPolyZoneReader is not None and isinstance(
+            zone, TecplotPolyZoneReader
+        ):
+            dataset = self._build_poly_grid(zone, x_name, y_name, z_name)
         elif isinstance(zone, TecplotFEZoneReader):
             cell_type = _VTK_CELL_TYPE.get(zone.zone_type)
             if cell_type is None:
                 raise _UnsupportedZoneError(
                     f"zone type {zone.zone_type.name} is not yet supported by this "
-                    "reader (only ORDERED and classic FE zones -- line, triangle, "
-                    "quadrilateral, tetrahedron, brick -- are converted; "
-                    "polygon/polyhedron/mixed zones are not)"
+                    "reader (only ORDERED, classic FE zones -- line, triangle, "
+                    "quadrilateral, tetrahedron, brick -- polygon, and polyhedron "
+                    "zones are converted; mixed zones are not)"
                 )
             dataset = self._build_unstructured_grid(
                 zone, cell_type, x_name, y_name, z_name
             )
         else:
             raise _UnsupportedZoneError(
-                "zone is neither an ordered nor a classic FE zone"
+                f"zone type {zone.zone_type.name} is not supported by this reader"
             )
 
         _add_aux_field_data(dataset.GetFieldData(), zone.auxdata.items())
@@ -936,22 +1219,15 @@ class TecplotReader(VTKPythonAlgorithmBase):
         z_name: str | None,
     ) -> vtkUnstructuredGrid:
         """Build a ``vtkUnstructuredGrid`` for a classic finite-element zone."""
-        n_nodes = zone.num_nodes
-        x = self._fetch_flat_coordinate(zone, x_name, n_nodes)
-        y = self._fetch_flat_coordinate(zone, y_name, n_nodes)
-        z = self._fetch_flat_coordinate(zone, z_name, n_nodes)
-
-        points = np.column_stack((x, y, z)).astype(np.float64, copy=False)
-        vtk_points = vtkPoints()
-        vtk_points.SetData(numpy_support.numpy_to_vtk(points, deep=True))
+        vtk_points = self._build_flat_points(zone, x_name, y_name, z_name)
 
         node_map = zone.node_map
         if node_map is None or node_map.size == 0:
             raise _UnsupportedZoneError("zone has no connectivity (empty node map)")
 
         n_cells, nodes_per_cell = node_map.shape
-        # tecio node maps are 1-based (Tecplot convention); VTK point ids are 0-based.
-        connectivity = (node_map.astype(np.int64, copy=False) - 1).ravel()
+        # tecio node maps are 0-based, same as VTK point ids.
+        connectivity = node_map.astype(np.int64, copy=False).ravel()
         offsets = np.arange(
             0, (n_cells + 1) * nodes_per_cell, nodes_per_cell, dtype=np.int64
         )
@@ -965,6 +1241,69 @@ class TecplotReader(VTKPythonAlgorithmBase):
         grid = vtkUnstructuredGrid()
         grid.SetPoints(vtk_points)
         grid.SetCells(cell_type, cell_array)
+        return grid
+
+    def _build_flat_points(
+        self,
+        zone: _TecioFEZone,
+        x_name: str | None,
+        y_name: str | None,
+        z_name: str | None,
+    ) -> vtkPoints:
+        """Return the points of a node-list zone (FE, polygon, or polyhedron)."""
+        n_nodes = zone.num_nodes
+        x = self._fetch_flat_coordinate(zone, x_name, n_nodes)
+        y = self._fetch_flat_coordinate(zone, y_name, n_nodes)
+        z = self._fetch_flat_coordinate(zone, z_name, n_nodes)
+
+        points = np.column_stack((x, y, z)).astype(np.float64, copy=False)
+        vtk_points = vtkPoints()
+        vtk_points.SetData(numpy_support.numpy_to_vtk(points, deep=True))
+        return vtk_points
+
+    def _build_poly_grid(
+        self,
+        zone: Any,
+        x_name: str | None,
+        y_name: str | None,
+        z_name: str | None,
+    ) -> vtkUnstructuredGrid:
+        """Build a ``vtkUnstructuredGrid`` for a FEPOLYGON or FEPOLYHEDRON zone."""
+        vtk_points = self._build_flat_points(zone, x_name, y_name, z_name)
+        num_elements = int(zone.num_elements)
+        face_nodes, face_left, face_right = (
+            zone.face_nodes,
+            zone.face_left,
+            zone.face_right,
+        )
+        if face_nodes is None or len(face_nodes) == 0:
+            raise _UnsupportedZoneError("zone has no face connectivity")
+
+        grid = vtkUnstructuredGrid()
+        grid.SetPoints(vtk_points)
+        if zone.zone_type == ZoneType.FEPOLYGON:
+            offsets, nodes, rebuilt = _polygon_loops(
+                face_nodes, face_left, face_right, num_elements
+            )
+            if rebuilt:
+                print(
+                    f"[TecplotTecioReader] Zone {zone.zone_index} ({zone.title!r}): "
+                    f"{rebuilt} polygon(s) did not chain by edge direction and were "
+                    "rebuilt without it."
+                )
+            counts = np.diff(offsets)
+            grid.SetCells(
+                _cell_types(counts, VTK_POLYGON), _vtk_cell_array(offsets, nodes)
+            )
+        else:
+            _set_polyhedral_cells(
+                grid,
+                face_nodes,
+                zone.face_node_counts,
+                face_left,
+                face_right,
+                num_elements,
+            )
         return grid
 
     @staticmethod

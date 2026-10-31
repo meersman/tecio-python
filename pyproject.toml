@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tecio-python"
 version = "0.4.0"
+license = "Apache-2.0"
 description = "Python interface for reading and writing Tecplot data files"
 
 readme = "README.md"
@@ -25,7 +26,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",    
 ]
 
@@ -83,8 +83,8 @@ include = ["tecio*"]
 exclude = ["archive*", "test*"]
 
 [tool.setuptools.data-files]
-"share/plugins/paraview" = ["plugins/paraview/*"]
-"share/plugins/matlab" = ["plugins/matlab/*"]
+"share/tecio/plugins/paraview" = ["plugins/paraview/*"]
+"share/tecio/plugins/matlab" = ["plugins/matlab/*"]
 
 [tool.ruff]
 line-length = 88
