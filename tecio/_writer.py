@@ -1501,7 +1501,7 @@ def _remap_boundary_connections(
     elements = zone.boundary_connection_elements
     zones = zone.boundary_connection_zones
 
-    lookup = np.full(int(zones.max()) + 1, -1, dtype=np.int64)
+    lookup = np.full(int(np.max(zones)) + 1, -1, dtype=np.int64)
     for source, output in zone_map.items():
         if 0 <= source < lookup.size:
             lookup[source] = output
@@ -1595,7 +1595,7 @@ class TecplotWriter(ABC):
     def _file_format(self) -> str:
         """Format tag for :class:`~tecio._meta.WriterMeta`, e.g. ``'szplt'``."""
 
-    def __dir__(self) -> list[str]:  # pragma: no cover
+    def __dir__(self) -> list[str]:
         """List only the public attributes and methods."""
         return public_dir(self)
 
