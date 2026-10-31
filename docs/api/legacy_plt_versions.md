@@ -50,7 +50,7 @@ immediately after the magic number.
 | Specify-var-location flag + locations | INT32 (4) [+ INT32×NumVar] | `1` = per-variable NODAL/CELL_CENTERED list follows; `0` = all NODAL. | **Absent** — every variable is NODAL, no such field or concept on disk. | Yes | Yes | Yes | Yes |
 | Raw face-neighbors-supplied flag | INT32 (4) | Boolean. | **Absent** | Yes | Yes | Yes | Yes |
 | Misc. face-neighbor count | INT32 (4) [+ mode INT32 (+ "completely specified" INT32)] | Count of miscellaneous (non-raw) face-neighbor connections; if non-zero, a mode enum follows, and for FE zone types a "completely specified" flag follows the mode. | **Absent** — no face-neighbor concept exists in v7.5 at all. | Present, **except** the "completely specified" flag: confirmed absent by diffing the same real zone written by v11.2 vs. its v10.7 re-export. | Present, including the "completely specified" flag. | Present. | Present. |
-| Unidentified always-0 INT32 | INT32 (4) | One extra field, position confirmed, purpose unknown. | n/a | n/a | **Present**, unconditionally, right after the misc. face-neighbor block regardless of whether the zone has face neighbors. | n/a | n/a |
+| Unidentified always-0 INT32 | INT32 (4) | One extra field, position confirmed, purpose unknown. | n/a | n/a | **Present**, unconditionally, right after the zone type. Always `0` (the data-packing field; non-zero means POINT, which is rejected). | n/a | n/a |
 | NumPoints (FE) | INT32 (4) | Node/point count. | See IMax above (same field, reused). | Yes | Yes | Yes | Yes |
 | NumFaces / TotalFaceNodes (FEPOLYGON/FEPOLYHEDRON) | v19.1: INT64×2 (16); pre-v19.1: INT32×4 (16, adds NumBoundaryFaces/NumBoundaryConnections) | Poly-zone-only extra counts. | **Not representable** — v7.5's Format field has no polygon/polyhedron encoding at all (only the classic element types). | INT32×4 form | INT32×4 form | INT32×4 form | INT64×2 form |
 | NumElements (FE) | INT32 (4) | Element/cell count. | See JMax above (same field, reused). | Yes | Yes | Yes | Yes |
@@ -78,7 +78,7 @@ Note:
 | Connectivity block (FE only) | INT32×(L×NumElements) | `L`=3/4/4/8 for triangle/quad/tet/brick, per-element node indices. | **1-based on disk already** — confirmed against a real, large (1.5M-node) file: every index lands in `[1, NumPoints]`, and the byte walk lands exactly on EOF. This library subtracts 1 on read so `node_map` is 0-based like every other format: this is the one place a legacy version's on-disk convention needs converting. | **0-based on disk**, returned as-is (see {doc}`index` for the indexing rules). | Same as v10.7 | Same | Same |
 | Raw face-neighbors (if flagged) | INT32×(NumElements×FacesPerElement) | Dense 1-based neighbor-element table, `0`=boundary. | **Not representable** — no face-neighbor concept in v7.5. | Yes | Yes | Yes | Yes |
 | Miscellaneous face-neighbor connections (if count > 0) | Mode-dependent: fixed-width for the two ONE_TO_ONE modes, ragged (record carries its own length) for the two ONE_TO_MANY modes. | Explicit face-neighbor connection list. | **Not representable.** | Yes | Yes | Yes | Yes |
-| Poly face map (FEPOLYGON/FEPOLYHEDRON only) | Several INT32 blocks (face-node offsets/counts, face nodes, left/right elements, boundary connections). | Face connectivity for poly zones. | **Not representable** — v7.5 has no polygon/polyhedron zone type. | Parsed for metadata/byte-alignment (the zone header fields exist), but **the block is only skipped, never decoded** — `node_map` returns `None` for these zone types on every version, current format included. This is a general library limitation, not legacy-specific. | Same | Same | Same |
+| Poly face map (FEPOLYGON/FEPOLYHEDRON only) | Several INT32 blocks (face-node offsets/counts, face nodes, left/right elements, boundary connections). | Face connectivity for poly zones. | **Not representable** — v7.5 has no polygon/polyhedron zone type. | Decoded for v111 and later into `TecplotPolyZoneReader` (v111 stores the boundary connection zones as INT16, later versions as INT32). **v107 poly zones raise `PltReadError`.** v19.1 poly zones follow the guide (INT64 counts, per-face node counts for polyhedra, no boundary connections) but **no v19.1 poly file has been available to test this**. | Same | Same | Same |
 
 ---
 
@@ -110,8 +110,8 @@ on-disk format or explicitly-flagged-as-inferred logic:
   chains of repeats across zones, repeated columns dropped from the middle of
   POINT rows, and chained connectivity repeats were all confirmed by loading
   hand-built files in the Tecplot GUI.
-- **v11.1's extra `0` INT32**: position and constant value are confirmed
-  by byte-reinsertion; its purpose is not yet identified.
+- **v11.1's extra `0` INT32**: sits right after the zone type, and its value is
+  confirmed by byte-reinsertion. It is the data-packing field (0 = BLOCK).
 - **Bit-packed data** (DataType 6): not supported for any version, raises
   `NotImplementedError`.
 
