@@ -50,6 +50,7 @@ from ._reader import (
     TecplotAuxDataReader,
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotVariableReader,
     TecplotZoneReader,
@@ -70,6 +71,7 @@ for _cls in (
     TecplotZoneReader,
     TecplotOrderedZoneReader,
     TecplotFEZoneReader,
+    TecplotPolyZoneReader,
     TecplotVariableReader,
     TecplotAuxDataReader,
     TecplotSzlReader,
@@ -116,6 +118,7 @@ __all__ = [
     "TecplotZoneReader",
     "TecplotOrderedZoneReader",
     "TecplotFEZoneReader",
+    "TecplotPolyZoneReader",
     "TecplotVariableReader",
     "TecplotAuxDataReader",
     "TecplotSzlReader",
@@ -153,5 +156,5 @@ _STANDARD_MODULE_ATTRIBUTES = (
 
 
 # Only public API visible to user
-def __dir__() -> list:
+def __dir__() -> list:  # pragma: no cover
     return sorted((*_STANDARD_MODULE_ATTRIBUTES, *__all__))

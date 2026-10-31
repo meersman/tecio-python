@@ -8,10 +8,11 @@ modes ``'w'``/``'x'``, based on the output file extension, or an
 lifecycle:
 
 ```python
-with tecio.open("out.szplt", "w", variables=["x", "y", "p"]) as w:  # 1. open
-    w.add_auxdataset_dict({"Solver": "MyCFD"})           # 2. stage dataset level aux data
-    w.write_ordered_zone(data=[x, y, p], title="Zone 1")  # 3. write structured zones
-    w.write_fe_zone(data=[...], zone_type=ZoneType.FETRIANGLE, ...)  # 4. write unstructured zones
+with tecio.open("out.szplt", "w", variables=["x", "y", "p"]) as w:    # 1. open
+    w.add_auxdataset_dict({"Solver": "SU2"})                          # 2. stage dataset level aux data
+    w.write_ordered_zone(data=[x, y, p], title="Zone 1")              # 3. write structured zones
+    w.write_fe_zone(data=[...], zone_type=ZoneType.FETRIANGLE, ...)   # 4. write unstructured zones
+    w.write_poly_zone(data=[...], zone_type=ZoneType.FEPOLYGON, ...)  # PLT and DAT only
     # 5. close happens automatically on context-manager exit
 ```
 
@@ -122,6 +123,39 @@ convention here instead, same as everywhere else in the Python API.
 accepted without error but currently do nothing, the ASCII face-neighbor
 representation isn't implemented yet. Passing them silently produces a file
 with no face-neighbor data, planned work, not yet scheduled.
+
+## `write_poly_zone`
+
+Writes one complete FEPOLYGON or FEPOLYHEDRON zone. PLT and DAT only; SZPLT
+raises `NotImplementedError` (Tecplot plans SZPLT polyhedra support in a future
+TecIO release). `write_fe_zone` raises `ValueError` for these zone types. The
+`write_fe_zone` variable, sharing, time, strand and aux parameters apply here
+too, plus:
+
+| Parameter | Type | Default | SZL | PLT | DAT |
+|---|---|---|---|---|---|
+| `zone_type` | `ZoneType` | required | ✗ | ✓ | ✓ |
+| `face_nodes` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
+| `face_node_counts` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
+| `face_left_elements`, `face_right_elements` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
+| `boundary_connection_counts` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
+| `boundary_connection_elements` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
+| `boundary_connection_zones` | `ArrayLike \| None` | `None` | ✗ | ✓ | ✓ |
+| `con_sharing` | `int \| None` | `None` | ✗ | ✓ | ✓ |
+| `datapacking` | `DataPacking \| str` | `BLOCK` | ✗ | BLOCK | BLOCK |
+
+Note that all face connectivity arrays use 0-baesd node and element indices,
+consistently with the node connectivity and face neighbors for classical
+finite-element zones. 1D arrays for `face_left_elements`/`face_right_elements` are required to
+indicate the element on each side of a face. An edge cell face with no
+neighbor should use `-1`, and `-(b + 2)` to point at boundary face `b`, which
+is described by the three boundary arrays.  `face_node_counts` is required for
+polyhedra, but Polygon faces always have two nodes and is optional (must be
+all 2 if given). Node and element counts are inferred as the highest index
+plus one. If boundary faces are defined for a zone, connectivity is sharing is
+disabled as the zone boundary must be uniquely defined. Tecplot requires BLOCK
+packing for poly zones (even with only nodal variables) so this package will
+raise `ValueError` for `datapacking="POINT"`.
 
 ## Format-specific classes
 

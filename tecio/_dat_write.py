@@ -6,6 +6,7 @@ Supported ``DATAPACKING`` modes for writing:
       followed by a separate row-per-cell section for cell-centred variables.
       Pass ``datapacking="POINT"`` to :meth:`~TecplotDatWriter.write_ordered_zone`
       or :meth:`~TecplotDatWriter.write_fe_zone`.
+    * Poly zones (:meth:`~TecplotDatWriter.write_poly_zone`) are always ``BLOCK``.
 """
 
 from __future__ import annotations
@@ -35,12 +36,14 @@ from ._writer import (
     PassiveVarsSpec,
     PreparedFEZone,
     PreparedOrderedZone,
+    PreparedPolyZone,
     TecplotWriter,
     VarSharingSpec,
     convert_face_connections_to_one_based,
     normalize_precision,
     prepare_fe_zone,
     prepare_ordered_zone,
+    prepare_poly_zone,
 )
 
 # -------------------------------------------------------------------------------------
@@ -264,6 +267,21 @@ def _stage_point_rows(
 def _stage_connectivity_row(buf: io.StringIO, row: npt.NDArray) -> None:
     """Write one element's node indices to *buf* as space-separated ints."""
     buf.write(_DATA_INDENT + " ".join(str(int(n)) for n in row) + "\n")
+
+
+def _stage_int_block(
+    buf: io.StringIO, label: str, arr: npt.NDArray, per_line: int = 10
+) -> None:
+    """Write a flat integer array to *buf* under a ``# label`` comment line.
+
+    Tecplot writes the face-map sections of poly zones this way, ``per_line`` values
+    per line, and the reader skips the comment.
+    """
+    buf.write(f"# {label}\n")
+    flat = arr.ravel()
+    for start in range(0, flat.size, per_line):
+        chunk = flat[start : start + per_line].tolist()
+        buf.write(_DATA_INDENT + " ".join(map(str, chunk)) + "\n")
 
 
 # ======================================================================================
@@ -615,7 +633,8 @@ class TecplotDatWriter(TecplotWriter):
         from the zone referenced by *con_sharing*.
 
         Warning:
-            ``FEPOLYGON`` and ``FEPOLYHEDRON`` raise :exc:`NotImplementedError`.
+            ``FEPOLYGON`` and ``FEPOLYHEDRON`` are face-based and raise
+            :exc:`ValueError`, write them with :meth:`write_poly_zone`.
 
         Args:
             data (Sequence[npt.ArrayLike]):
@@ -697,13 +716,12 @@ class TecplotDatWriter(TecplotWriter):
                 accepted. Defaults to :attr:`~tecio.DataPacking.BLOCK`.
 
         Raises:
-            NotImplementedError:
-                For FEPOLYGON or FEPOLYHEDRON.
             TypeError:
                 If *passive_vars*/*var_sharing* isn't a list/tuple/set/mapping as
                 appropriate, or mixes variable names and indices.
             ValueError:
-                On variable count or array length mismatch; if ``node_map`` is omitted
+                For FEPOLYGON or FEPOLYHEDRON (use :meth:`write_poly_zone`); on
+                variable count or array length mismatch; if ``node_map`` is omitted
                 without ``con_sharing``; if ``var_sharing``/``con_sharing`` reference a
                 zone with no recorded node/cell count, or one whose count disagrees with
                 this zone's; or a variable named in both *passive_vars* and
@@ -727,8 +745,8 @@ class TecplotDatWriter(TecplotWriter):
                     "string equivalents."
                 ) from None
         if zone_type in _FE_POLY:
-            raise NotImplementedError(
-                f"Zone type {zone_type.name!r} is not supported by write_fe_zone."
+            raise ValueError(
+                f"{zone_type.name} zones are face-based, use write_poly_zone."
             )
         if zone_type not in _FE_SIMPLE:
             raise NotImplementedError(
@@ -904,6 +922,255 @@ class TecplotDatWriter(TecplotWriter):
             )
         )
 
+    def write_poly_zone(
+        self,
+        data: Sequence[npt.ArrayLike],
+        zone_type: ZoneType,
+        *,
+        face_nodes: npt.ArrayLike | None = None,
+        face_node_counts: npt.ArrayLike | None = None,
+        face_left_elements: npt.ArrayLike | None = None,
+        face_right_elements: npt.ArrayLike | None = None,
+        boundary_connection_counts: npt.ArrayLike | None = None,
+        boundary_connection_elements: npt.ArrayLike | None = None,
+        boundary_connection_zones: npt.ArrayLike | None = None,
+        title: str | None = None,
+        variables: list[str] | None = None,
+        value_locations: Sequence[ValueLocation] | None = None,
+        passive_vars: PassiveVarsSpec | None = None,
+        var_sharing: VarSharingSpec | None = None,
+        con_sharing: int | None = None,
+        solution_time: float = 0.0,
+        strand_id: int = 0,
+        aux: dict[str, Any] | None = None,
+        datapacking: DataPacking | str = DataPacking.BLOCK,
+    ) -> None:
+        """Write a complete FEPOLYGON or FEPOLYHEDRON (face-based) zone.
+
+        Node and element counts are inferred from the face map, or from the
+        *con_sharing* source zone when it is omitted. Every index is 0-based in
+        Python and shifted to the 1-based ASCII convention here (0 for no element,
+        ``-k`` for the k-th boundary face).
+
+        The face map follows the variable blocks as integer sections introduced by the
+        same ``#`` comment lines Tecplot writes: ``# node count per face`` (polyhedra
+        only), ``# face nodes``, ``# left elements``, ``# right elements``, and with
+        boundary connections ``# boundary connection counts``, ``# boundary connection
+        elements``, and ``# boundary connection zones``. Nothing is written for a zone
+        that shares connectivity.
+
+        Args:
+            data (Sequence[npt.ArrayLike]):
+                Sequence of 1-D arrays, one per active (non-passive, non-shared) dataset
+                variable, in dataset order. NODAL arrays need ``num_nodes`` values,
+                CELL_CENTERED arrays ``num_elements``, both inferred from the face map.
+            zone_type (ZoneType):
+                :attr:`~tecio.ZoneType.FEPOLYGON` or
+                :attr:`~tecio.ZoneType.FEPOLYHEDRON`.
+            face_nodes (npt.ArrayLike):
+                Flat 0-based node indices of all faces, in face order. Two per face
+                for a polygon zone. Required unless ``con_sharing`` is set.
+            face_node_counts (npt.ArrayLike):
+                Number of nodes of each face. Required for FEPOLYHEDRON. Optional for
+                FEPOLYGON, where every face has 2 nodes.
+            face_left_elements (npt.ArrayLike):
+                Element on the left of each face: a 0-based element index, ``-1`` for
+                no element, or ``-(b + 2)`` for boundary face ``b`` (0-based).
+            face_right_elements (npt.ArrayLike):
+                Element on the right of each face, same convention as
+                ``face_left_elements``.
+            boundary_connection_counts (npt.ArrayLike):
+                Number of connections of each boundary face. Boundary faces describe
+                neighbors in other zones, or faces with more than one neighbor.
+            boundary_connection_elements (npt.ArrayLike):
+                Flat 0-based neighbor element of every boundary connection.
+            boundary_connection_zones (npt.ArrayLike):
+                Flat 0-based zone of every neighbor element. May only reference a zone
+                already written or this zone.
+            title (str):
+                Zone title string. Defaults to ``"Poly_Zone_{index}"``, with this
+                zone's 0-based index.
+            variables (list[str]):
+                Variable name list, only used when the file has not been opened yet
+                (lazy-open path). Defaults to ``[V1, V2, V3, ...]``.
+            value_locations (Sequence[ValueLocation]):
+                Per-active-variable :class:`~tecio.ValueLocation`. Defaults to all
+                ``NODAL``.
+            passive_vars (list | tuple | set | None):
+                Variables to mark passive: a list, tuple, or set of variable names, or
+                of 0-based indices. Defaults to all active.
+            var_sharing (Mapping[int | str, int]):
+                Variables to share from another zone: a ``{variable: source zone}``
+                mapping, name or 0-based index to 0-based zone index.
+            con_sharing (int):
+                Zone index to share the face map from, which must be a zone of the
+                same type without boundary faces (TecIO does not allow sharing those).
+                ``None`` means this zone owns its connectivity.
+            solution_time (float):
+                Solution time for transient data. Defaults to ``0.0``.
+            strand_id (int):
+                Strand ID for transient data, ``0`` for static zones.
+            aux (dict[str, str | float | int]):
+                Zone-level auxiliary data as ``{name: value}`` pairs.
+            datapacking (DataPacking | str):
+                Must be :attr:`~tecio.DataPacking.BLOCK`. Tecplot refuses ``POINT``
+                for poly zones, whether or not they have cell-centered variables.
+
+        Raises:
+            TypeError:
+                If *passive_vars*/*var_sharing* isn't a list/tuple/set/mapping as
+                appropriate, or mixes variable names and indices.
+            ValueError:
+                If *datapacking* is :attr:`~tecio.DataPacking.POINT`. For a
+                *zone_type* other than FEPOLYGON or FEPOLYHEDRON (use
+                :meth:`write_fe_zone`); on a missing, inconsistent, or out of range
+                face map, boundary connection, or variable array.
+            KeyError:
+                A *passive_vars*/*var_sharing* name doesn't match any dataset variable.
+            IndexError:
+                A *passive_vars*/*var_sharing* index is out of range.
+        """
+        if isinstance(datapacking, str):
+            try:
+                datapacking = DataPacking[datapacking.upper()]
+            except KeyError:
+                raise ValueError(
+                    f"datapacking={datapacking!r} is not supported; "
+                    "use DataPacking.BLOCK or its string equivalent."
+                ) from None
+        if datapacking != DataPacking.BLOCK:
+            raise ValueError(
+                "Polygon and polyhedron zones must use BLOCK data packing."
+            )
+
+        new_zone_index = self.current_zone + 1
+        if title is None:
+            title = f"Poly_Zone_{new_zone_index}"
+        if variables is None:
+            variables = [f"V{i}" for i in range(1, len(data) + 1)]
+
+        # Open the file if lazily loaded and flush buffered aux data
+        if not self._opened:
+            self._open(variables)
+        if self.current_zone == -1:
+            self.flush_aux()
+
+        arrays: list[npt.NDArray] = [np.asarray(arr) for arr in data]
+        variable_types = [
+            _resolve_written_type(_infer_data_type(arr), self.precision)
+            for arr in arrays
+        ]
+
+        prepared: PreparedPolyZone | None = prepare_poly_zone(
+            arrays,
+            variable_types,
+            zone_type,
+            face_nodes=face_nodes,
+            face_node_counts=face_node_counts,
+            face_left_elements=face_left_elements,
+            face_right_elements=face_right_elements,
+            boundary_connection_counts=boundary_connection_counts,
+            boundary_connection_elements=boundary_connection_elements,
+            boundary_connection_zones=boundary_connection_zones,
+            value_locations=value_locations,
+            passive_vars=passive_vars,
+            var_sharing=var_sharing,
+            con_sharing=con_sharing,
+            dataset_variables=self._check_variables(),
+            meta=self._meta,
+            on_error=self._handle_zone_error,
+        )
+        if prepared is None:
+            return
+        conn = prepared.connectivity
+
+        buf = io.StringIO()
+        self._stage_zone_header(
+            buf,
+            title,
+            zone_type,
+            num_nodes=conn.num_nodes,
+            num_elements=conn.num_cells,
+            solution_time=solution_time,
+            strand_id=strand_id,
+            passive_vars=prepared.passive_vars,
+            var_sharing=prepared.var_sharing,
+            value_locations_global=prepared.value_locations_global,
+            variable_types_global=prepared.variable_types_global,
+            con_sharing=prepared.con_sharing,
+            aux=aux,
+            datapacking=datapacking,
+            num_faces=conn.num_faces,
+            total_face_nodes=conn.total_face_nodes,
+            num_boundary_faces=conn.num_boundary_faces,
+            num_boundary_connections=conn.num_boundary_connections,
+        )
+
+        for arr, dt in zip(arrays, variable_types, strict=True):
+            _stage_float_array(
+                buf, arr.astype(_DT_TO_DTYPE[dt], copy=False), self._float_fmt
+            )
+
+        # Face map (if not shared). ASCII is the 0-based API convention plus one for
+        # every array: 0 for no element and -k for the k-th boundary face.
+        if prepared.con_sharing is None:
+            assert conn.face_nodes is not None
+            assert (
+                conn.face_left_elements is not None
+                and conn.face_right_elements is not None
+            )
+            if zone_type is ZoneType.FEPOLYHEDRON:
+                assert conn.face_node_counts is not None
+                _stage_int_block(buf, "node count per face", conn.face_node_counts)
+            _stage_int_block(buf, "face nodes", conn.face_nodes.astype(np.int64) + 1)
+            _stage_int_block(
+                buf, "left elements", conn.face_left_elements.astype(np.int64) + 1
+            )
+            _stage_int_block(
+                buf, "right elements", conn.face_right_elements.astype(np.int64) + 1
+            )
+            if conn.num_boundary_faces:
+                assert conn.boundary_connection_counts is not None
+                assert conn.boundary_connection_elements is not None
+                assert conn.boundary_connection_zones is not None
+                _stage_int_block(
+                    buf, "boundary connection counts", conn.boundary_connection_counts
+                )
+                _stage_int_block(
+                    buf,
+                    "boundary connection elements",
+                    conn.boundary_connection_elements.astype(np.int64) + 1,
+                )
+                _stage_int_block(
+                    buf,
+                    "boundary connection zones",
+                    conn.boundary_connection_zones.astype(np.int64) + 1,
+                )
+
+        self._check_handle().write(buf.getvalue())
+        self.current_zone = new_zone_index
+
+        self._meta.record_zone(
+            ZoneMeta(
+                index=self.current_zone,
+                title=title,
+                zone_type=zone_type,
+                solution_time=solution_time,
+                strand_id=strand_id,
+                num_aux_items=len(aux) if aux else 0,
+                num_nodes=conn.num_nodes,
+                num_elements=conn.num_cells,
+                num_faces=conn.num_faces,
+                total_face_nodes=conn.total_face_nodes,
+                num_boundary_faces=conn.num_boundary_faces,
+                num_boundary_connections=conn.num_boundary_connections,
+                value_locations=tuple(prepared.value_locations_global),
+                passive_vars=tuple(prepared.passive_vars),
+                shared_vars=tuple(prepared.var_sharing),
+                data_types=tuple(prepared.variable_types_global),
+            )
+        )
+
     # -- Private helpers --------------------------------------------------------------
 
     def _handle_zone_error(self) -> None:
@@ -947,6 +1214,10 @@ class TecplotDatWriter(TecplotWriter):
         num_face_connections: int = 0,
         face_neighbor_mode: FaceNeighborMode = FaceNeighborMode.LOCAL_ONE_TO_ONE,
         face_neighbors_complete: bool | None = None,
+        num_faces: int = 0,
+        total_face_nodes: int = 0,
+        num_boundary_faces: int = 0,
+        num_boundary_connections: int = 0,
     ) -> None:
         """Write a ``ZONE`` header block into the staging buffer *buf*."""
         zt_str = _ZONETYPE_STR[zone_type]
@@ -959,6 +1230,11 @@ class TecplotDatWriter(TecplotWriter):
 
         if zone_type == ZoneType.ORDERED:
             buf.write(f"{_INDENT}I={imax}, J={jmax}, K={kmax}, ZONETYPE={zt_str}\n")
+        elif zone_type in _FE_POLY:
+            buf.write(
+                f"{_INDENT}Nodes={num_nodes}, Faces={num_faces}, "
+                f"Elements={num_elements}, ZONETYPE={zt_str}\n"
+            )
         else:
             buf.write(
                 f"{_INDENT}Nodes={num_nodes}, Elements={num_elements}, "
@@ -966,6 +1242,19 @@ class TecplotDatWriter(TecplotWriter):
             )
 
         buf.write(f"{_INDENT}DATAPACKING={datapacking.name}\n")
+
+        if zone_type in _FE_POLY:
+            # A polygon face always has 2 nodes, so only polyhedra record the total.
+            face_nodes_str = (
+                f"TotalNumFaceNodes={total_face_nodes}, "
+                if zone_type is ZoneType.FEPOLYHEDRON
+                else ""
+            )
+            buf.write(
+                f"{_INDENT}{face_nodes_str}"
+                f"NumConnectedBoundaryFaces={num_boundary_faces}, "
+                f"TotalNumBoundaryConnections={num_boundary_connections}\n"
+            )
 
         if num_face_connections > 0:
             buf.write(f"{_INDENT}FACENEIGHBORCONNECTIONS={num_face_connections}\n")

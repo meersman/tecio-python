@@ -1,36 +1,24 @@
 """Python bindings for the TecIO C library.
 
-Ctypes bindings for both the new SZL API (``tec_*``) and the classic PLT
-API (``tec*142``), and a Python wrapper function for each C entry point.
-Constants live in :mod:`tecio._constants` instead, since they don't depend on
-this library at all, and are available directly from :mod:`tecio` (e.g.
-``tecio.ZoneType``); re-exported here too since every wrapper function
-below uses them.
+Ctypes bindings for both the new SZL API (``tec_*``) and the classic PLT API
+(``tec*142``), and a Python wrapper function for each C entry point.  The TecIO library
+often uses integers with special meanings (zone types, data types, data locations). The
+same values are used both for writing and for SZL reading and writing. Enum classes with
+descriptive names are defined in :mod:`tecio._constants` and imported here.
 
-Graceful degradation:
-    Importing this module never raises, even if ``libtecio.so``/``.dylib``
-    cannot be found at all, or if the library that *is* found is missing
-    individual symbols (e.g. an older Tecplot install predating a newer
-    C entry point such as ``tecznefemixed142``, added in Tecplot 360 2024
-    R1). Every wrapper function is bound independently; a missing symbol
-    disables only that one function; it doesn't take down the whole module.
-    Calling a disabled function raises :exc:`TecioUnavailableError`
-    (a subclass of :exc:`TecioError`) with a message explaining why. The
-    actual load/bind/guard mechanism lives in :mod:`tecio._utils`, this
-    module just uses it, filling in its own exceptions and its own already
-    -loaded ``lib``.
-
-    This matters most for the ASCII DAT reader/writer, which only needs
-    the constants in :mod:`tecio._constants` and never calls into the C
-    library at all, so it works with no Tecplot installation whatsoever.
-    SZL and PLT genuinely need the C library and degrade to raising on
-    first use instead.
-
-    After binding, a one-line summary is emitted via :mod:`warnings`
-    (category :class:`TecioAvailabilityWarning`) if anything is disabled,
-    silent if everything bound successfully. The same information is
-    available as data, without relying on the warning being seen, via
-    :data:`LIBRARY_LOAD_ERROR` and :data:`UNAVAILABLE_FUNCTIONS`.
+Notes:
+    - The ctypes bindings are defined conditionall if the symbol exists in the loaded
+      TecIO shared object binary such that older versions not containing newer (often
+      niche) functions such as :func:`~tecio.libtecio.tecznefemixed142` do not cause the
+      entire `tecio` Python package to fail to load.
+    - Only loading the available symbols also allows for the `tecio` Python package to
+      be used without any TecIO shared object binary available as it is only needed for
+      SZL read/write and PLT write. DAT read/write and PLT read have pure Python
+      implementations and do not have external dependencies other than NumPy.
+    - The load/bind/guard mechanism is defined in :mod:`tecio._utils`
+    - After binding, a one-line summary is emitted via :mod:`warnings` (category
+      :class:`TecioAvailabilityWarning`) if anything is disabled and is available as
+      data via :data:`LIBRARY_LOAD_ERROR` and :data:`UNAVAILABLE_FUNCTIONS`.
 """
 
 from __future__ import annotations
@@ -1029,8 +1017,8 @@ bind_ctypes(
         ctypes.POINTER(ctypes.c_int32),  # ZoneType (FEPOLYGON or FEPOLYHEDRON)
         ctypes.POINTER(ctypes.c_int32),  # NumNodes
         ctypes.POINTER(ctypes.c_int32),  # NumElements
-        ctypes.POINTER(ctypes.c_int32),  # NumFaces
-        ctypes.POINTER(ctypes.c_int32),  # TotalNumFaceNodes
+        ctypes.POINTER(ctypes.c_int64),  # NumFaces
+        ctypes.POINTER(ctypes.c_int64),  # TotalNumFaceNodes
         ctypes.POINTER(ctypes.c_double),  # SolutionTime
         ctypes.POINTER(ctypes.c_int32),  # StrandID
         ctypes.POINTER(ctypes.c_int32),  # ParentZone
@@ -1158,7 +1146,7 @@ bind_ctypes(
         ctypes.POINTER(ctypes.c_int32),  # NumBoundaryFaces
         ctypes.POINTER(ctypes.c_int32),  # BoundaryConnectionCounts
         ctypes.POINTER(ctypes.c_int32),  # BoundaryConnectionElems
-        ctypes.POINTER(ctypes.c_int16),  # BoundaryConnectionZones
+        ctypes.POINTER(ctypes.c_int32),  # BoundaryConnectionZones
     ],
 )
 
@@ -1259,6 +1247,8 @@ if UNAVAILABLE_FUNCTIONS:  # pragma: no cover - environment-dependent
 
 
 # -- Reading SZL files -----------------------------------------------------------------
+
+
 @requires_symbol("tecFileReaderOpen")
 def tec_file_reader_open(file_name: str) -> ctypes.c_void_p:
     """Open an SZL file for reading.
@@ -1404,6 +1394,8 @@ def tec_data_set_get_num_zones(handle: ctypes.c_void_p) -> int:
 
 
 # -- Reading SZL zones -----------------------------------------------------------------
+
+
 @requires_symbol("tecZoneGetIJK")
 def tec_zone_get_ijk(handle: ctypes.c_void_p, zone_index: int) -> tuple[int, int, int]:
     """Get zone dimensions (ORDERED) or node/element counts (FE).
@@ -2001,6 +1993,8 @@ def tec_zone_face_nbr_get_connections_64(
 
 
 # -- Reading SZL variable data ---------------------------------------------------------
+
+
 @requires_symbol("tecVarGetName")
 def tec_var_get_name(handle: ctypes.c_void_p, var_index: int) -> str:
     """Get a variable name by index.
@@ -2501,6 +2495,8 @@ def tec_zone_var_get_uint8_values(
 
 
 # -- Reading SZL aux data --------------------------------------------------------------
+
+
 @requires_symbol("tecDataSetAuxDataGetNumItems")
 def tec_data_set_aux_data_get_num_items(handle: ctypes.c_void_p) -> int:
     """Get the number of dataset-level auxiliary data items.
@@ -2708,6 +2704,8 @@ def tec_zone_aux_data_get_item(
 
 
 # -- Initialization and File Handling --------------------------------------------------
+
+
 @requires_symbol("tecFileWriterOpen")
 def tec_file_writer_open(
     filename: str,
@@ -2833,6 +2831,8 @@ def tec_file_writer_flush(
 
 
 # -- Write Zone Headers ----------------------------------------------------------------
+
+
 @requires_symbol("tecZoneCreateIJK")
 def tec_zone_create_ijk(
     handle: ctypes.c_void_p,
@@ -3169,6 +3169,8 @@ def tec_zone_create_fe_mixed(
 
 
 # -- Optional fields -------------------------------------------------------------------
+
+
 @requires_symbol("tecZoneSetUnsteadyOptions")
 def tec_zone_set_unsteady_options(
     handle: ctypes.c_void_p, zone: int, strand: int = 0, solution_time: float = 0.0
@@ -3292,6 +3294,8 @@ def tec_zone_add_aux_data(
 
 
 # -- Write variable value functions ----------------------------------------------------
+
+
 @requires_symbol("tecZoneVarWriteDoubleValues")
 def tec_zone_var_write_double_values(
     handle: ctypes.c_void_p, zone: int, var: int, values: npt.ArrayLike
@@ -3460,6 +3464,8 @@ def tec_zone_var_write_uint8_values(
 
 
 # -- Write Zone Connectivity (FE zones only) -------------------------------------------
+
+
 @requires_symbol("tecZoneNodeMapWrite32")
 def tec_zone_node_map_write32(
     handle: ctypes.c_void_p,
@@ -3667,6 +3673,8 @@ def tec_zone_face_nbr_write_connections64(
 
 
 # -- File initialization and finalization ----------------------------------------------
+
+
 @requires_symbol("tecini142")
 def tecini142(
     filename: str,
@@ -3827,6 +3835,8 @@ def tecforeign142(output_foreign_byte_order: int) -> None:
 
 
 # -- Zone creation ---------------------------------------------------------------------
+
+
 @requires_symbol("teczne142")
 def teczne142(
     zone_title: str,
@@ -4004,8 +4014,8 @@ def tecpolyzne142(
         ctypes.c_int32(_to_int_value(zone_type)),
         ctypes.c_int32(num_nodes),
         ctypes.c_int32(num_elements),
-        ctypes.c_int32(num_faces),
-        ctypes.c_int32(total_num_face_nodes),
+        ctypes.c_int64(num_faces),
+        ctypes.c_int64(total_num_face_nodes),
         ctypes.c_double(solution_time),
         ctypes.c_int32(strand),
         ctypes.c_int32(0),  # Parent zone deprecated.
@@ -4151,6 +4161,8 @@ def tecznefemixed142(
 
 
 # -- Data writing ----------------------------------------------------------------------
+
+
 @requires_symbol("tecdat142")
 def tecdat142(
     field_data: npt.ArrayLike,
@@ -4259,21 +4271,26 @@ def tecface142(face_connections: npt.ArrayLike) -> None:
 
 @requires_symbol("tecpolyface142")
 def tecpolyface142(
-    face_node_counts: npt.ArrayLike,
+    face_node_counts: npt.ArrayLike | None,
     face_nodes: npt.ArrayLike,
     face_left_elems: npt.ArrayLike,
     face_right_elems: npt.ArrayLike,
+    num_faces: int | None = None,
 ) -> None:
     """Write face data for polygonal/polyhedral zones (classic API).
 
     Args:
-        face_node_counts (npt.ArrayLike): Number of nodes per face.
+        face_node_counts (npt.ArrayLike | None): Number of nodes per face, or ``None``
+            for a polygonal zone (every face has two nodes).
         face_nodes (npt.ArrayLike): Concatenated face node indices.
         face_left_elems (npt.ArrayLike): Left element per face.
         face_right_elems (npt.ArrayLike): Right element per face.
+        num_faces (int | None): Number of faces, required when ``face_node_counts`` is
+            ``None``.
 
     Raises:
         TecioError: On C library error.
+        ValueError: If ``face_node_counts`` and ``num_faces`` are both ``None``.
 
     Note:
         ``face_node_counts`` has one entry per face.
@@ -4285,15 +4302,21 @@ def tecpolyface142(
         Element indices are 1-based; 0 indicates boundary.
     """
     assert lib is not None  # narrowed: @requires_symbol already checked
-    face_node_counts_array = np.ascontiguousarray(face_node_counts, dtype=np.int32)
     face_nodes_array = np.ascontiguousarray(face_nodes, dtype=np.int32)
     face_left_elems_array = np.ascontiguousarray(face_left_elems, dtype=np.int32)
     face_right_elems_array = np.ascontiguousarray(face_right_elems, dtype=np.int32)
 
-    num_faces = ctypes.c_int32(face_node_counts_array.size)
-    face_node_counts_ptr = face_node_counts_array.ctypes.data_as(
-        ctypes.POINTER(ctypes.c_int32)
-    )
+    face_node_counts_ptr = None
+    if face_node_counts is None:
+        if num_faces is None:
+            raise ValueError("num_faces is required when face_node_counts is None")
+    else:
+        face_node_counts_array = np.ascontiguousarray(face_node_counts, dtype=np.int32)
+        num_faces = face_node_counts_array.size
+        face_node_counts_ptr = face_node_counts_array.ctypes.data_as(
+            ctypes.POINTER(ctypes.c_int32)
+        )
+    num_faces_c = ctypes.c_int32(num_faces)
     face_nodes_ptr = face_nodes_array.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
     face_left_elems_ptr = face_left_elems_array.ctypes.data_as(
         ctypes.POINTER(ctypes.c_int32)
@@ -4303,7 +4326,7 @@ def tecpolyface142(
     )
 
     ret = lib.tecpolyface142(
-        ctypes.byref(num_faces),
+        ctypes.byref(num_faces_c),
         face_node_counts_ptr,
         face_nodes_ptr,
         face_left_elems_ptr,
@@ -4311,8 +4334,7 @@ def tecpolyface142(
     )
     if ret != 0:
         raise TecioError(
-            f"tecpolyface142 Error: num_faces={face_node_counts_array.size}, "
-            f"return_code={ret}"
+            f"tecpolyface142 Error: num_faces={num_faces}, return_code={ret}"
         )
 
 
@@ -4320,18 +4342,23 @@ def tecpolyface142(
 def tecpolybconn142(
     boundary_connection_counts: npt.ArrayLike,
     boundary_connection_elems: npt.ArrayLike,
-    boundary_connection_zones: npt.ArrayLike | None = None,
+    boundary_connection_zones: npt.ArrayLike,
 ) -> None:
     """Write boundary connections for poly zones (classic API).
 
     Args:
-        boundary_connection_counts (npt.ArrayLike): Connections per
-            boundary face.
-        boundary_connection_elems (npt.ArrayLike): Element indices.
-        boundary_connection_zones (npt.ArrayLike | None): Zone indices.
+        boundary_connection_counts (npt.ArrayLike): Connections per boundary face.
+        boundary_connection_elems (npt.ArrayLike): 1-based element index of every
+            connection, concatenated over the boundary faces.
+        boundary_connection_zones (npt.ArrayLike): 1-based zone number of every
+            connection, same length as ``boundary_connection_elems``. Required: TecIO
+            crashes the process on a null array. A zone must already exist (the
+            current zone counts), so a connection cannot point to a later zone.
 
     Raises:
         TecioError: On C library error.
+        ValueError: If the array lengths are inconsistent. TecIO reads the arrays
+            without a bounds check, so a short array would be read past its end.
 
     Note:
         Used to specify connectivity to neighboring zones at boundaries.
@@ -4341,20 +4368,26 @@ def tecpolybconn142(
         boundary_connection_counts, dtype=np.int32
     )
     bconn_elems_array = np.ascontiguousarray(boundary_connection_elems, dtype=np.int32)
+    total = int(bconn_counts_array.sum())
+    if bconn_elems_array.size != total:
+        raise ValueError(
+            f"boundary_connection_elems has {bconn_elems_array.size} entries but "
+            f"boundary_connection_counts sums to {total}."
+        )
 
     num_boundary_faces = ctypes.c_int32(bconn_counts_array.size)
     bconn_counts_ptr = bconn_counts_array.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
     bconn_elems_ptr = bconn_elems_array.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 
-    if boundary_connection_zones is not None:
-        bconn_zones_array = np.ascontiguousarray(
-            boundary_connection_zones, dtype=np.int16
+    # TecIO reads the zone numbers as INT32, not INT16 as the Fortran documentation
+    # states: an int16 array is read as pairs and yields garbage zone numbers.
+    bconn_zones_array = np.ascontiguousarray(boundary_connection_zones, dtype=np.int32)
+    if bconn_zones_array.size != total:
+        raise ValueError(
+            f"boundary_connection_zones has {bconn_zones_array.size} entries but "
+            f"boundary_connection_counts sums to {total}."
         )
-        bconn_zones_ptr = bconn_zones_array.ctypes.data_as(
-            ctypes.POINTER(ctypes.c_int16)
-        )
-    else:
-        bconn_zones_ptr = ctypes.POINTER(ctypes.c_int16)()
+    bconn_zones_ptr = bconn_zones_array.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 
     ret = lib.tecpolybconn142(
         ctypes.byref(num_boundary_faces),
@@ -4370,6 +4403,8 @@ def tecpolybconn142(
 
 
 # -- Auxiliary data --------------------------------------------------------------------
+
+
 @requires_symbol("tecauxstr142")
 def tecauxstr142(name: str, value: str) -> None:
     """Add dataset-level auxiliary data (classic API).
@@ -4451,6 +4486,8 @@ def teczauxstr142(name: str, value: str) -> None:
 
 
 # -- User-defined data (custom records) ------------------------------------------------
+
+
 @requires_symbol("tecusr142")
 def tecusr142(user_rec: str) -> None:
     """Write a user-defined data record (classic API).

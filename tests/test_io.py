@@ -576,68 +576,6 @@ class TestOpenErrors:
         with pytest.raises(ValueError, match="[Uu]nsupported"):
             tecio.open(str(tmp_path / "data.hdf5"), "w")
 
-    def test_append_poly_zone_raises(self, tmp_path: Path) -> None:
-        """Appending to a file with FEPOLYGON zones raises :exc:`NotImplementedError`."""
-        # Build a minimal PLT file containing a FEPOLYGON zone using the
-        # low-level classic API, since the high-level writer does not expose
-        # poly zones.
-        path = tmp_path / "poly.plt"
-        from tecio import ValueLocation, ZoneType, libtecio
-
-        pts = np.array(
-            [
-                [0.25, 0],
-                [0.75, 0],
-                [1, 0.25],
-                [1, 0.75],
-                [0.75, 1],
-                [0.25, 1],
-                [0, 0.75],
-                [0, 0.25],
-            ],
-            dtype=np.float32,
-        )
-        x, y = pts[:, 0], pts[:, 1]
-        face_pairs = np.array([
-            [2, 1],
-            [3, 2],
-            [4, 3],
-            [5, 4],
-            [6, 5],
-            [7, 6],
-            [8, 7],
-            [1, 8],
-        ])
-        nf = len(face_pairs)
-        fn_counts = np.full(nf, 2, dtype=np.int32)
-        fn_nodes = face_pairs.ravel().astype(np.int32)
-        le = np.zeros(nf, dtype=np.int32)
-        re = np.ones(nf, dtype=np.int32)
-        c = np.array([1.0], dtype=np.float32)
-
-        libtecio.tecini142(str(path), variables=["x", "y", "c"])
-        libtecio.tecpolyzne142(
-            "oct",
-            ZoneType.FEPOLYGON,
-            num_nodes=8,
-            num_faces=nf,
-            num_elements=1,
-            total_num_face_nodes=len(fn_nodes),
-            value_locations=[
-                ValueLocation.NODAL,
-                ValueLocation.NODAL,
-                ValueLocation.CELL_CENTERED,
-            ],
-        )
-        libtecio.tecdat142(x, is_double=False)
-        libtecio.tecdat142(y, is_double=False)
-        libtecio.tecdat142(c, is_double=False)
-        libtecio.tecpolyface142(fn_counts, fn_nodes, le, re)
-        libtecio.tecend142()
-
-        with pytest.raises(NotImplementedError, match="[Pp]oly"):
-            tecio.open(str(path), "a")
-
 
 # ===========================================================================
 # get_variable_list / get_zone_list

@@ -78,6 +78,18 @@ from create_test_data import (
     create_FE_tri,
     create_FE_two_bricks,
     create_ordered,
+    create_poly_bconn_coarse,
+    create_poly_bconn_fine,
+    create_poly_golden_spiral,
+    create_poly_hanging_ladder,
+    create_poly_octagon,
+    create_poly_two_cells,
+    create_polyhedron_bconn_coarse,
+    create_polyhedron_bconn_fine,
+    create_polyhedron_cube,
+    create_polyhedron_cube_pair,
+    create_polyhedron_hanging_columns,
+    create_polyhedron_mixed_faces,
     scalar_field,
 )
 
@@ -89,6 +101,7 @@ from tecio import (
     FileType,
     ValueLocation,
     ZoneType,
+    libtecio,
 )
 from tecio._szl_write import _infer_data_type
 
@@ -1289,11 +1302,11 @@ class TestWriteFEZone:
     def test_write_fe_unsupported_zone_type_raises(
         self, fmt: str, output_path: Callable
     ) -> None:
-        """FEPOLYGON raises NotImplementedError on every writer."""
+        """FEPOLYGON is face-based: every writer points to ``write_poly_zone``."""
         x, y, nodes = create_FE_tri()
         path = _path(output_path, fmt, "write_fe_unsupported_zone_type")
 
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError, match="write_poly_zone"):
             with tecio.open(str(path), "w") as w:
                 w.write_fe_zone(
                     zone_type=ZoneType.FEPOLYGON,
@@ -1347,6 +1360,1289 @@ class TestWriteFEZone:
         with tecio.open(str(path), "r") as r:
             assert r.num_zones == 2
             assert [zn.title for zn in r.zones] == ["zone_1", "zone_2"]
+
+
+# ======================================================================================
+# Poly (FEPOLYGON / FEPOLYHEDRON) zone tests (PLT and DAT only)
+# ======================================================================================
+
+#: Formats that can hold poly zones.
+POLY_FORMATS: list[str] = ["plt", "dat"]
+
+
+@pytest.mark.parametrize("fmt", POLY_FORMATS)
+class TestWritePolyZone:
+    """Tests for write_poly_zone, run against the formats that support it."""
+
+    def test_write_poly_octagon(self, fmt: str, output_path: Callable) -> None:
+        """FEPOLYGON -- a single eight-sided cell.
+
+        Demonstrates:
+        - ``write_poly_zone`` call structure: ``zone_type``, ``data``, and the face map
+          ``face_nodes``/``face_left_elements``/``face_right_elements``
+        - A polygon face is an edge with 2 nodes, so no ``face_node_counts`` is given
+        - 0-based indices, with ``-1`` for no element on that side of a face
+        """
+        x, y, faces, left, right = create_poly_octagon()
+
+        path = _path(output_path, fmt, "write_poly_octagon")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                variables=["x", "y"],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                title="Poly_Octagon",
+            )
+
+        assert path.exists()
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert isinstance(zone, tecio.TecplotPolyZoneReader)
+            assert zone.title == "Poly_Octagon"
+            assert zone.zone_type == ZoneType.FEPOLYGON
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (8, 1, 8)
+            np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+            np.testing.assert_allclose(zone.variables[0].values, x, rtol=_rtol(fmt, x))
+
+    def test_write_poly_two_cells(self, fmt: str, output_path: Callable) -> None:
+        """FEPOLYGON -- a pentagon and a triangle sharing one edge."""
+        x, y, faces, left, right = create_poly_two_cells()
+
+        path = _path(output_path, fmt, "write_poly_two_cells")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (6, 2, 7)
+            np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+            # The reader reports 2 nodes for every polygon face.
+            np.testing.assert_array_equal(zone.face_node_counts, 2)
+
+    def test_write_poly_hanging_ladder(self, fmt: str, output_path: Callable) -> None:
+        """FEPOLYGON -- columns of 1, 2 and 4 cells with hanging nodes.
+
+        The coordinates are integers, which are kept as integers in a DAT file.
+        """
+        x, y, faces, left, right = create_poly_hanging_ladder()
+
+        path = _path(output_path, fmt, "write_poly_hanging_ladder")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (15, 7, 21)
+            np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+            np.testing.assert_array_equal(zone.variables[0].values, x)
+
+    def test_write_poly_golden_spiral(self, fmt: str, output_path: Callable) -> None:
+        """FEPOLYGON -- five squares laid out as a golden spiral."""
+        x, y, faces, left, right = create_poly_golden_spiral()
+
+        path = _path(output_path, fmt, "write_poly_golden_spiral")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (12, 5, 16)
+            np.testing.assert_array_equal(zone.face_nodes, faces.ravel())
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+
+    def test_write_poly_bconn(self, fmt: str, output_path: Callable) -> None:
+        """Two FEPOLYGON zones joined by connected boundary faces.
+
+        Demonstrates:
+        - ``boundary_connection_counts``/``_elements``/``_zones`` on the second zone,
+          which points at elements of zone 0 (TecIO only accepts connections to a zone
+          that is already written)
+        - ``face_right_elements`` values ``-2`` and ``-3`` reference boundary faces 0 and 1
+        """
+        fx, fy, ffaces, fleft, fright = create_poly_bconn_fine()
+        cx, cy, cfaces, cleft, cright, counts, elems, zones = create_poly_bconn_coarse()
+
+        path = _path(output_path, fmt, "write_poly_bconn")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[fx, fy],
+                face_nodes=ffaces,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[cx, cy],
+                face_nodes=cfaces,
+                face_left_elements=cleft,
+                face_right_elements=cright,
+                boundary_connection_counts=counts,
+                boundary_connection_elements=elems,
+                boundary_connection_zones=zones,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            fine, coarse = r.zones
+            assert (fine.num_nodes, fine.num_elements, fine.num_faces) == (10, 4, 13)
+            assert fine.num_boundary_faces == 0
+            assert (coarse.num_nodes, coarse.num_elements, coarse.num_faces) == (
+                6,
+                2,
+                7,
+            )
+            assert coarse.num_boundary_faces == 2
+            assert coarse.num_boundary_connections == 4
+            np.testing.assert_array_equal(coarse.face_right_elements, cright)
+            np.testing.assert_array_equal(coarse.boundary_connection_counts, counts)
+            np.testing.assert_array_equal(coarse.boundary_connection_elements, elems)
+            np.testing.assert_array_equal(coarse.boundary_connection_zones, zones)
+
+    def test_write_polyhedron_cube(self, fmt: str, output_path: Callable) -> None:
+        """FEPOLYHEDRON -- one cube.
+
+        Demonstrates:
+        - ``face_node_counts`` is required for polyhedra, whose faces differ in size
+        - Flat ``face_nodes`` that the reader splits with ``face_node_offsets``
+        """
+        x, y, z, nodes, counts, left, right = create_polyhedron_cube()
+
+        path = _path(output_path, fmt, "write_polyhedron_cube")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[x, y, z],
+                variables=["x", "y", "z"],
+                face_nodes=nodes,
+                face_node_counts=counts,
+                face_left_elements=left,
+                face_right_elements=right,
+                title="Poly_Cube",
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert zone.zone_type == ZoneType.FEPOLYHEDRON
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (8, 1, 6)
+            np.testing.assert_array_equal(zone.face_nodes, nodes)
+            np.testing.assert_array_equal(zone.face_node_counts, counts)
+            np.testing.assert_array_equal(zone.face_node_offsets, 4 * np.arange(7))
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+            np.testing.assert_array_equal(zone.variables[2].values, z)
+
+    def test_write_polyhedron_cube_pair(self, fmt: str, output_path: Callable) -> None:
+        """FEPOLYHEDRON -- two cubes sharing a face."""
+        x, y, z, nodes, counts, left, right = create_polyhedron_cube_pair()
+
+        path = _path(output_path, fmt, "write_polyhedron_cube_pair")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[x, y, z],
+                face_nodes=nodes,
+                face_node_counts=counts,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (12, 2, 11)
+            np.testing.assert_array_equal(zone.face_nodes, nodes)
+            np.testing.assert_array_equal(zone.face_node_counts, counts)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+
+    def test_write_polyhedron_mixed_faces(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """FEPOLYHEDRON -- cube, pyramid, prism and hexagonal prism in one zone."""
+        x, y, z, nodes, counts, left, right = create_polyhedron_mixed_faces()
+
+        path = _path(output_path, fmt, "write_polyhedron_mixed_faces")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[x, y, z],
+                face_nodes=nodes,
+                face_node_counts=counts,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (23, 4, 22)
+            assert set(zone.face_node_counts.tolist()) == {3, 4, 6}
+            np.testing.assert_array_equal(zone.face_nodes, nodes)
+            np.testing.assert_array_equal(zone.face_node_counts, counts)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+            np.testing.assert_allclose(zone.variables[0].values, x, rtol=_rtol(fmt, x))
+
+    def test_write_polyhedron_hanging_columns(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """FEPOLYHEDRON -- one coarse cube against four fine cubes."""
+        x, y, z, nodes, counts, left, right = create_polyhedron_hanging_columns()
+
+        path = _path(output_path, fmt, "write_polyhedron_hanging_columns")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[x, y, z],
+                face_nodes=nodes,
+                face_node_counts=counts,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert (zone.num_nodes, zone.num_elements, zone.num_faces) == (22, 5, 25)
+            np.testing.assert_array_equal(zone.face_nodes, nodes)
+            np.testing.assert_array_equal(zone.face_node_counts, counts)
+            np.testing.assert_array_equal(zone.face_left_elements, left)
+            np.testing.assert_array_equal(zone.face_right_elements, right)
+
+    def test_write_polyhedron_bconn(self, fmt: str, output_path: Callable) -> None:
+        """Two FEPOLYHEDRON zones joined by one boundary face with four connections."""
+        fx, fy, fz, fnodes, fcounts, fleft, fright = create_polyhedron_bconn_fine()
+        cx, cy, cz, cnodes, ccounts, cleft, cright, bcounts, belems, bzones = (
+            create_polyhedron_bconn_coarse()
+        )
+
+        path = _path(output_path, fmt, "write_polyhedron_bconn")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[fx, fy, fz],
+                face_nodes=fnodes,
+                face_node_counts=fcounts,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[cx, cy, cz],
+                face_nodes=cnodes,
+                face_node_counts=ccounts,
+                face_left_elements=cleft,
+                face_right_elements=cright,
+                boundary_connection_counts=bcounts,
+                boundary_connection_elements=belems,
+                boundary_connection_zones=bzones,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            fine, coarse = r.zones
+            assert (fine.num_nodes, fine.num_elements, fine.num_faces) == (18, 4, 20)
+            assert (coarse.num_nodes, coarse.num_elements, coarse.num_faces) == (
+                8,
+                1,
+                6,
+            )
+            assert coarse.num_boundary_faces == 1
+            assert coarse.num_boundary_connections == 4
+            np.testing.assert_array_equal(coarse.face_right_elements, cright)
+            np.testing.assert_array_equal(coarse.boundary_connection_counts, bcounts)
+            np.testing.assert_array_equal(coarse.boundary_connection_elements, belems)
+            np.testing.assert_array_equal(coarse.boundary_connection_zones, bzones)
+
+    def test_write_poly_cell_centered(self, fmt: str, output_path: Callable) -> None:
+        """A cell-centered variable on a poly zone has one value per element.
+
+        Demonstrates:
+        - ``value_locations=[NODAL, NODAL, CELL_CENTERED]``
+        - Cell-centered array length ``num_elements``, validated like other zone types
+        """
+        x, y, faces, left, right = create_poly_two_cells()
+        c = np.array([10.0, 20.0])
+
+        path = _path(output_path, fmt, "write_poly_cell_centered")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y, c],
+                variables=["x", "y", "c"],
+                value_locations=[
+                    ValueLocation.NODAL,
+                    ValueLocation.NODAL,
+                    ValueLocation.CELL_CENTERED,
+                ],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert zone.variables["c"].value_location == ValueLocation.CELL_CENTERED
+            np.testing.assert_allclose(zone.get_array("c"), c)
+
+    def test_write_poly_default_title(self, fmt: str, output_path: Callable) -> None:
+        """Without ``title`` the zone is named ``Poly_Zone_<index>``."""
+        x, y, faces, left, right = create_poly_octagon()
+
+        path = _path(output_path, fmt, "write_poly_default_title")
+        with tecio.open(str(path), "w") as w:
+            for _ in range(2):
+                w.write_poly_zone(
+                    zone_type=ZoneType.FEPOLYGON,
+                    data=[x, y],
+                    face_nodes=faces,
+                    face_left_elements=left,
+                    face_right_elements=right,
+                )
+
+        with tecio.open(str(path), "r") as r:
+            assert [z.title for z in r.zones] == ["Poly_Zone_0", "Poly_Zone_1"]
+
+    def test_write_polygon_counts_accepted_when_two(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """A polygon's ``face_node_counts`` may be passed if every count is 2.
+
+        This lets the arrays of a reader be passed straight back to the writer.
+        """
+        x, y, faces, left, right = create_poly_octagon()
+
+        path = _path(output_path, fmt, "write_poly_counts_two")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_node_counts=np.full(8, 2),
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            np.testing.assert_array_equal(r.zones[0].face_nodes, faces.ravel())
+
+    def test_write_poly_transient_and_aux(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """``solution_time``, ``strand_id`` and zone ``aux`` on a poly zone."""
+        x, y, faces, left, right = create_poly_two_cells()
+
+        path = _path(output_path, fmt, "write_poly_transient")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                solution_time=0.5,
+                strand_id=1,
+                aux={"Key": "value"},
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert zone.solution_time == 0.5
+            assert zone.strand_id == 1
+            assert dict(zone.auxdata.items()) == {"Key": "value"}
+
+    def test_write_poly_with_other_zone_types(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """A poly zone and an FE zone in one file keep their own reader classes."""
+        fx, fy, nodes = create_FE_tri()
+        x, y, faces, left, right = create_poly_two_cells()
+
+        path = _path(output_path, fmt, "write_poly_with_fe")
+        with tecio.open(str(path), "w") as w:
+            w.write_fe_zone(
+                zone_type=ZoneType.FETRIANGLE,
+                data=[fx, fy],
+                node_map=nodes,
+                variables=["x", "y"],
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            assert isinstance(r.zones[0], tecio.TecplotFEZoneReader)
+            assert isinstance(r.zones[1], tecio.TecplotPolyZoneReader)
+            np.testing.assert_array_equal(r.zones[0].node_map, nodes.astype(np.int64))
+            np.testing.assert_array_equal(r.zones[1].face_left_elements, left)
+
+
+@pytest.mark.parametrize("fmt", POLY_FORMATS)
+class TestWritePolySharing:
+    """Connectivity, variable and passive handling for poly zones."""
+
+    def test_write_poly_connectivity_and_variable_sharing(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """Zone 1 shares x, y, z and the whole face map with zone 0.
+
+        Demonstrates:
+        - ``con_sharing=0`` writes no face map for the zone, and cannot be combined
+          with face arrays
+        - ``var_sharing`` and ``passive_vars`` work as in the other zone types
+        - The reader returns the source zone's face map for the sharing zone
+        """
+        x, y, z, nodes, counts, left, right = create_polyhedron_cube_pair()
+        f = x + 2 * y
+
+        path = _path(output_path, fmt, "write_poly_shared")
+        with tecio.open(str(path), "w", variables=["x", "y", "z", "f", "q"]) as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[x, y, z, f],
+                face_nodes=nodes,
+                face_node_counts=counts,
+                face_left_elements=left,
+                face_right_elements=right,
+                passive_vars={"q"},
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[f + 1],
+                var_sharing={"x": 0, "y": 0, "z": 0},
+                passive_vars={"q"},
+                con_sharing=0,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            first, second = r.zones
+            assert first.shared_connectivity is None
+            assert second.shared_connectivity == 0
+            assert second.num_faces == first.num_faces == 11
+            np.testing.assert_array_equal(second.face_nodes, nodes)
+            np.testing.assert_array_equal(second.face_node_counts, counts)
+            np.testing.assert_array_equal(second.face_left_elements, left)
+            np.testing.assert_array_equal(second.face_right_elements, right)
+            assert first.variables["x"].shared_zone is None
+            assert second.variables["x"].shared_zone == 0
+            assert second.variables["q"].is_passive()
+            assert second.get_array("q") is None
+            np.testing.assert_array_equal(second.get_array("x"), first.get_array("x"))
+            np.testing.assert_allclose(second.get_array("f"), f + 1, rtol=_rtol(fmt, f))
+
+
+@pytest.mark.parametrize("fmt", POLY_FORMATS)
+class TestWritePolyAppend:
+    """Poly zones survive the copy done by the append modes."""
+
+    def test_append_keeps_and_adds_poly_zones(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """Mode ``"a"`` keeps the zones already on disk and adds a new one."""
+        ox, oy, ofaces, oleft, oright = create_poly_octagon()
+        tx, ty, tfaces, tleft, tright = create_poly_two_cells()
+
+        path = _path(output_path, fmt, "write_poly_append")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[ox, oy],
+                variables=["x", "y"],
+                face_nodes=ofaces,
+                face_left_elements=oleft,
+                face_right_elements=oright,
+            )
+        with tecio.open(str(path), "a") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[tx, ty],
+                face_nodes=tfaces,
+                face_left_elements=tleft,
+                face_right_elements=tright,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            assert r.num_zones == 2
+            np.testing.assert_array_equal(r.zones[0].face_nodes, ofaces.ravel())
+            np.testing.assert_array_equal(r.zones[1].face_nodes, tfaces.ravel())
+            np.testing.assert_array_equal(r.zones[1].face_right_elements, tright)
+
+    def test_append_read_write_reads_existing_zone(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """Mode ``"a+"`` reads the poly zones that are already in the file."""
+        x, y, z, nodes, counts, left, right = create_polyhedron_cube()
+
+        path = _path(output_path, fmt, "write_poly_append_rw")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[x, y, z],
+                face_nodes=nodes,
+                face_node_counts=counts,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+        with tecio.open(str(path), "a+") as rw:
+            zone = rw.zones[0]
+            assert isinstance(zone, tecio.TecplotPolyZoneReader)
+            np.testing.assert_array_equal(zone.face_nodes, nodes)
+
+    def test_append_keeps_boundary_connections_and_sharing(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """Re-writing a file keeps boundary connections and shared connectivity."""
+        fx, fy, ffaces, fleft, fright = create_poly_bconn_fine()
+        cx, cy, cfaces, cleft, cright, counts, elems, zones = create_poly_bconn_coarse()
+        path = _path(output_path, fmt, "write_poly_append_bconn")
+        with tecio.open(str(path), "w", variables=["x", "y"]) as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[fx, fy],
+                face_nodes=ffaces,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[cx, cy],
+                face_nodes=cfaces,
+                face_left_elements=cleft,
+                face_right_elements=cright,
+                boundary_connection_counts=counts,
+                boundary_connection_elements=elems,
+                boundary_connection_zones=zones,
+            )
+        shared = _path(output_path, fmt, "write_poly_append_shared")
+        with tecio.open(str(shared), "w", variables=["x", "y"]) as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[fx, fy],
+                face_nodes=ffaces,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[fx + 1],
+                var_sharing={"y": 0},
+                con_sharing=0,
+            )
+
+        for p in (path, shared):
+            with tecio.open(str(p), "a"):
+                pass
+
+        with tecio.open(str(path), "r") as r:
+            np.testing.assert_array_equal(r.zones[1].boundary_connection_counts, counts)
+            np.testing.assert_array_equal(
+                r.zones[1].boundary_connection_elements, elems
+            )
+            np.testing.assert_array_equal(r.zones[1].boundary_connection_zones, zones)
+        with tecio.open(str(shared), "r") as r:
+            assert r.zones[1].shared_connectivity == 0
+            assert r.zones[1].variables["y"].shared_zone == 0
+
+
+@pytest.mark.parametrize("fmt", POLY_FORMATS)
+class TestWritePolyErrors:
+    """Inputs that cannot describe a valid face map are rejected before writing."""
+
+    @pytest.fixture
+    def path(self, fmt: str, output_path: Callable) -> Path:
+        """Output file for a write that is expected to fail."""
+        return _path(output_path, fmt, "write_poly_error")
+
+    def test_fe_zone_with_poly_type_points_to_write_poly_zone(self, path: Path) -> None:
+        """``write_fe_zone`` refuses the face-based zone types."""
+        x, y, nodes = create_FE_tri()
+        for zone_type in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
+            with (
+                pytest.raises(ValueError, match="write_poly_zone"),
+                tecio.open(str(path), "w") as w,
+            ):
+                w.write_fe_zone(zone_type=zone_type, data=[x, y], node_map=nodes)
+
+    def test_poly_zone_with_fe_type_points_to_write_fe_zone(self, path: Path) -> None:
+        """``write_poly_zone`` refuses the element-based zone types."""
+        x, y, faces, left, right = create_poly_octagon()
+        with (
+            pytest.raises(ValueError, match="write_fe_zone"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FETRIANGLE,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+    def test_missing_face_arrays(self, path: Path) -> None:
+        """Every zone that is not sharing connectivity needs the three face arrays."""
+        x, y, faces, left, right = create_poly_octagon()
+        for omit in ("face_nodes", "face_left_elements", "face_right_elements"):
+            arrays = {
+                "face_nodes": faces,
+                "face_left_elements": left,
+                "face_right_elements": right,
+            }
+            del arrays[omit]
+            with (
+                pytest.raises(ValueError, match="required"),
+                tecio.open(str(path), "w") as w,
+            ):
+                w.write_poly_zone(zone_type=ZoneType.FEPOLYGON, data=[x, y], **arrays)
+
+    def test_polyhedron_needs_counts(self, path: Path) -> None:
+        """Polyhedron faces differ in size, so ``face_node_counts`` is required."""
+        x, y, z, nodes, counts, left, right = create_polyhedron_cube()
+        with (
+            pytest.raises(ValueError, match="face_node_counts is required"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[x, y, z],
+                face_nodes=nodes,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+    def test_polygon_counts_must_be_two(self, path: Path) -> None:
+        """A polygon face is an edge, so a count other than 2 is an error."""
+        x, y, faces, left, right = create_poly_octagon()
+        with (
+            pytest.raises(ValueError, match="always have 2 nodes"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_node_counts=np.full(8, 3),
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+    def test_size_mismatches(self, path: Path) -> None:
+        """Face arrays must agree with each other in length."""
+        x, y, z, nodes, counts, left, right = create_polyhedron_cube()
+        arrays = {
+            "face_nodes": nodes,
+            "face_node_counts": counts,
+            "face_left_elements": left,
+            "face_right_elements": right,
+        }
+        for key in ("face_right_elements", "face_node_counts", "face_nodes"):
+            short = {**arrays, key: arrays[key][:-1]}
+            with (
+                pytest.raises(ValueError, match=f"{key} has"),
+                tecio.open(str(path), "w") as w,
+            ):
+                w.write_poly_zone(
+                    zone_type=ZoneType.FEPOLYHEDRON, data=[x, y, z], **short
+                )
+
+    def test_negative_node_index(self, path: Path) -> None:
+        """Node indices are 0-based, so a negative index is an error."""
+        x, y, faces, left, right = create_poly_octagon()
+        faces = faces.copy()
+        faces[0, 0] = -1
+        with (
+            pytest.raises(ValueError, match="0-based"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+    def test_non_integer_indices(self, path: Path) -> None:
+        """Face arrays must be integers."""
+        x, y, faces, left, right = create_poly_octagon()
+        with (
+            pytest.raises(ValueError, match="integer"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces.astype(float),
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+    def test_no_element_referenced(self, path: Path) -> None:
+        """At least one face must reference an element."""
+        x, y, faces, left, right = create_poly_octagon()
+        none = np.full(8, -1)
+        with (
+            pytest.raises(ValueError, match="No face references an element"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=none,
+                face_right_elements=none,
+            )
+
+    def test_boundary_reference_without_boundary_faces(self, path: Path) -> None:
+        """A ``-2`` in the face arrays needs boundary connection arrays."""
+        x, y, faces, left, right = create_poly_octagon()
+        right = right.copy()
+        right[0] = -2
+        with (
+            pytest.raises(ValueError, match="boundary face 0"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+    def test_boundary_arrays_must_come_together(self, path: Path) -> None:
+        """The three boundary connection arrays are all given or all omitted."""
+        x, y, faces, left, right, counts, elems, zones = create_poly_bconn_coarse()
+        with (
+            pytest.raises(ValueError, match="given together"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                boundary_connection_counts=counts,
+                boundary_connection_elements=elems,
+            )
+
+    def test_boundary_count_mismatch(self, path: Path) -> None:
+        """The boundary connection arrays must agree with each other."""
+        x, y, faces, left, right, counts, elems, zones = create_poly_bconn_coarse()
+        cases = [
+            ("sums to", np.array([1, 1]), elems, zones),
+            ("boundary_connection_zones has", counts, elems, np.array([0, 0])),
+            ("positive", np.array([4, 0]), elems, zones),
+        ]
+        for message, bcounts, belems, bzones in cases:
+            with (
+                pytest.raises(ValueError, match=message),
+                tecio.open(str(path), "w") as w,
+            ):
+                w.write_poly_zone(
+                    zone_type=ZoneType.FEPOLYGON,
+                    data=[x, y],
+                    face_nodes=faces,
+                    face_left_elements=left,
+                    face_right_elements=right,
+                    boundary_connection_counts=bcounts,
+                    boundary_connection_elements=belems,
+                    boundary_connection_zones=bzones,
+                )
+
+    def test_boundary_zone_must_exist(self, path: Path) -> None:
+        """The Tecplot libraries do not check the zone index, so it is checked here."""
+        x, y, faces, left, right, counts, elems, zones = create_poly_bconn_coarse()
+        for bad_zone, message in (
+            (5, "reference a zone already written"),
+            (-1, "0-based"),
+        ):
+            bzones = zones.copy()
+            bzones[0] = bad_zone
+            with (
+                pytest.raises(ValueError, match=message),
+                tecio.open(str(path), "w") as w,
+            ):
+                w.write_poly_zone(
+                    zone_type=ZoneType.FEPOLYGON,
+                    data=[x, y],
+                    face_nodes=faces,
+                    face_left_elements=left,
+                    face_right_elements=right,
+                    boundary_connection_counts=counts,
+                    boundary_connection_elements=elems,
+                    boundary_connection_zones=bzones,
+                )
+
+    def test_boundary_element_must_exist_in_its_zone(self, path: Path) -> None:
+        """The first zone written has no earlier zone, only itself to point at."""
+        x, y, faces, left, right, counts, elems, zones = create_poly_bconn_coarse()
+        with (
+            pytest.raises(ValueError, match="past the"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                boundary_connection_counts=counts,
+                boundary_connection_elements=elems,
+                boundary_connection_zones=np.zeros_like(zones),  # this zone itself
+            )
+
+    def test_boundary_element_checked_against_earlier_zone(self, path: Path) -> None:
+        """A connection to an element past the end of zone 0 is an error."""
+        fx, fy, ffaces, fleft, fright = create_poly_bconn_fine()
+        x, y, faces, left, right, counts, elems, zones = create_poly_bconn_coarse()
+        elems = elems.copy()
+        elems[0] = 4  # one past the end of zone 0, which has 4 elements
+        with (
+            pytest.raises(ValueError, match="past the 4 elements of zone 0"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[fx, fy],
+                face_nodes=ffaces,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                boundary_connection_counts=counts,
+                boundary_connection_elements=elems,
+                boundary_connection_zones=zones,
+            )
+
+    def test_con_sharing_rejects_face_arrays(self, path: Path) -> None:
+        """A zone that shares connectivity cannot also give face arrays."""
+        x, y, faces, left, right = create_poly_octagon()
+        with (
+            pytest.raises(ValueError, match="cannot be given together"),
+            tecio.open(str(path), "w") as w,
+        ):
+            for con_sharing in (None, 0):
+                w.write_poly_zone(
+                    zone_type=ZoneType.FEPOLYGON,
+                    data=[x, y],
+                    face_nodes=faces,
+                    face_left_elements=left,
+                    face_right_elements=right,
+                    con_sharing=con_sharing,
+                )
+
+    def test_con_sharing_needs_matching_poly_zone(self, path: Path) -> None:
+        """The source zone must exist, be a poly zone, and have the same type."""
+        fx, fy, nodes = create_FE_tri()
+        x, y, faces, left, right = create_poly_octagon()
+
+        with (
+            pytest.raises(ValueError, match="not a poly zone"),
+            tecio.open(str(path), "w", variables=["x", "y"]) as w,
+        ):
+            w.write_fe_zone(
+                zone_type=ZoneType.FETRIANGLE, data=[fx, fy], node_map=nodes
+            )
+            w.write_poly_zone(zone_type=ZoneType.FEPOLYGON, data=[x, y], con_sharing=0)
+
+        with (
+            pytest.raises(ValueError, match="cannot share connectivity"),
+            tecio.open(str(path), "w", variables=["x", "y"]) as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON, data=[x, y], con_sharing=0
+            )
+
+        with (
+            pytest.raises(ValueError, match="not been written"),
+            tecio.open(str(path), "w", variables=["x", "y"]) as w,
+        ):
+            w.write_poly_zone(zone_type=ZoneType.FEPOLYGON, data=[x, y], con_sharing=3)
+
+    def test_con_sharing_rejects_zone_with_boundary_faces(self, path: Path) -> None:
+        """TecIO refuses to share a face map that has boundary faces."""
+        fx, fy, ffaces, fleft, fright = create_poly_bconn_fine()
+        x, y, faces, left, right, counts, elems, zones = create_poly_bconn_coarse()
+        with (
+            pytest.raises(ValueError, match="boundary faces"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[fx, fy],
+                face_nodes=ffaces,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                boundary_connection_counts=counts,
+                boundary_connection_elements=elems,
+                boundary_connection_zones=zones,
+            )
+            w.write_poly_zone(zone_type=ZoneType.FEPOLYGON, data=[x, y], con_sharing=1)
+
+    def test_variable_array_sizes_are_checked(self, path: Path) -> None:
+        """Nodal arrays have one value per node, cell-centered one per element."""
+        x, y, faces, left, right = create_poly_two_cells()
+        locations = [
+            ValueLocation.NODAL,
+            ValueLocation.NODAL,
+            ValueLocation.CELL_CENTERED,
+        ]
+        cases = [
+            ("CELL_CENTERED", [x, y, np.zeros(1)]),  # 2 elements
+            ("NODAL", [x[:-1], y, np.zeros(2)]),  # 6 nodes
+        ]
+        for message, data in cases:
+            with (
+                pytest.raises(ValueError, match=message),
+                tecio.open(str(path), "w") as w,
+            ):
+                w.write_poly_zone(
+                    zone_type=ZoneType.FEPOLYGON,
+                    data=data,
+                    value_locations=locations,
+                    face_nodes=faces,
+                    face_left_elements=left,
+                    face_right_elements=right,
+                )
+
+    def test_all_variables_shared_warns_and_skips(
+        self, fmt: str, output_path: Callable
+    ) -> None:
+        """A zone whose variables are all shared holds nothing and is skipped."""
+        x, y, faces, left, right = create_poly_two_cells()
+
+        path = _path(output_path, fmt, "write_poly_all_shared")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                variables=["x", "y"],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+            with pytest.warns(tecio.EmptyZoneWarning):
+                w.write_poly_zone(
+                    zone_type=ZoneType.FEPOLYGON,
+                    data=[],
+                    con_sharing=0,
+                    var_sharing={"x": 0, "y": 0},
+                )
+
+        with tecio.open(str(path), "r") as r:
+            assert r.num_zones == 1
+
+    def test_point_packing_rejected(self, path: Path) -> None:
+        """Poly zones only support BLOCK packing."""
+        x, y, faces, left, right = create_poly_octagon()
+        with (
+            pytest.raises(ValueError, match="BLOCK data packing"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                datapacking="POINT",
+            )
+
+    def test_bad_datapacking_string(self, path: Path) -> None:
+        """An unknown ``datapacking`` string is an error."""
+        x, y, faces, left, right = create_poly_octagon()
+        with (
+            pytest.raises(ValueError, match="datapacking"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+                datapacking="X",
+            )
+
+
+class TestWritePolySzl:
+    """SZPLT cannot hold polygon or polyhedron zones yet."""
+
+    def test_write_poly_zone_not_implemented(self, output_path: Callable) -> None:
+        """``write_poly_zone`` raises ``NotImplementedError`` naming SZPLT."""
+        x, y, faces, left, right = create_poly_octagon()
+        with (
+            pytest.raises(NotImplementedError, match="SZPLT"),
+            tecio.open(str(output_path("err.szplt")), "w") as w,
+        ):
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+
+    def test_write_fe_zone_points_to_write_poly_zone(
+        self, output_path: Callable
+    ) -> None:
+        """``write_fe_zone`` with a poly type points to ``write_poly_zone``."""
+        x, y, nodes = create_FE_tri()
+        with (
+            pytest.raises(ValueError, match="write_poly_zone"),
+            tecio.open(str(output_path("err.szplt")), "w") as w,
+        ):
+            w.write_fe_zone(zone_type=ZoneType.FEPOLYGON, data=[x, y], node_map=nodes)
+
+
+class TestWritePolyDat:
+    """The ASCII layout that ``write_poly_zone`` produces."""
+
+    def test_writer_uses_tecplot_section_markers(self, output_path: Callable) -> None:
+        """Face map sections are labeled with the same ``#`` lines Tecplot writes."""
+        x, y, faces, left, right = create_poly_octagon()
+        fx, fy, fz, fnodes, fcounts, fleft, fright = create_polyhedron_bconn_fine()
+        cx, cy, cz, cnodes, ccounts, cleft, cright, bcounts, belems, bzones = (
+            create_polyhedron_bconn_coarse()
+        )
+        polygon = output_path("write_poly_markers_polygon.dat")
+        polyhedron = output_path("write_poly_markers_polyhedron.dat")
+
+        with tecio.open(str(polygon), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+        with tecio.open(str(polyhedron), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[fx, fy, fz],
+                face_nodes=fnodes,
+                face_node_counts=fcounts,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[cx, cy, cz],
+                face_nodes=cnodes,
+                face_node_counts=ccounts,
+                face_left_elements=cleft,
+                face_right_elements=cright,
+                boundary_connection_counts=bcounts,
+                boundary_connection_elements=belems,
+                boundary_connection_zones=bzones,
+            )
+
+        polygon_text = polygon.read_text()
+        text = polyhedron.read_text()
+        for marker in ("# face nodes", "# left elements", "# right elements"):
+            assert marker in polygon_text
+            assert marker in text
+        assert "# node count per face" not in polygon_text
+        assert "# node count per face" in text
+        for marker in (
+            "# boundary connection counts",
+            "# boundary connection elements",
+            "# boundary connection zones",
+        ):
+            assert marker in text
+            assert marker not in polygon_text
+
+    def test_header_keywords(self, output_path: Callable) -> None:
+        """The zone header carries the counts the reader needs."""
+        x, y, faces, left, right = create_poly_octagon()
+        cx, cy, cz, nodes, counts, cleft, cright = create_polyhedron_cube()
+        polygon = output_path("write_poly_header_polygon.dat")
+        polyhedron = output_path("write_poly_header_polyhedron.dat")
+
+        with tecio.open(str(polygon), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+                face_right_elements=right,
+            )
+        with tecio.open(str(polyhedron), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYHEDRON,
+                data=[cx, cy, cz],
+                face_nodes=nodes,
+                face_node_counts=counts,
+                face_left_elements=cleft,
+                face_right_elements=cright,
+            )
+
+        text = polygon.read_text()
+        assert "Nodes=8, Faces=8, Elements=1, ZONETYPE=FEPolygon" in text
+        assert "NumConnectedBoundaryFaces=0, TotalNumBoundaryConnections=0" in text
+        assert "TotalNumFaceNodes" not in text  # polygon faces always have 2 nodes
+        text = polyhedron.read_text()
+        assert "ZONETYPE=FEPolyhedron" in text
+        assert "TotalNumFaceNodes=24, NumConnectedBoundaryFaces=0" in text
+
+    def test_ascii_indices_are_one_based(self, output_path: Callable) -> None:
+        """ASCII adds one to every index: 0 is no element and -k is boundary face k."""
+        fx, fy, ffaces, fleft, fright = create_poly_bconn_fine()
+        cx, cy, cfaces, cleft, cright, counts, elems, zones = create_poly_bconn_coarse()
+        path = output_path("write_poly_ascii.dat")
+        with tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[fx, fy],
+                face_nodes=ffaces,
+                face_left_elements=fleft,
+                face_right_elements=fright,
+            )
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[cx, cy],
+                face_nodes=cfaces,
+                face_left_elements=cleft,
+                face_right_elements=cright,
+                boundary_connection_counts=counts,
+                boundary_connection_elements=elems,
+                boundary_connection_zones=zones,
+            )
+
+        lines = path.read_text().splitlines()
+        # Last zone: the boundary references -2 and -3 are written as -1 and -2.
+        start = lines.index("# right elements", len(lines) // 2)
+        right = [int(v) for v in lines[start + 1].split()]
+        assert min(right) == -2
+        elems_line = lines.index("# boundary connection elements")
+        assert min(int(v) for v in lines[elems_line + 1].split()) == 1
+
+    def test_failed_first_zone_leaves_no_file(self, output_path: Callable) -> None:
+        """A rejected first zone does not leave a partial file behind."""
+        x, y, faces, left, right = create_poly_octagon()
+        path = output_path("write_poly_failed.dat")
+        with contextlib.suppress(ValueError), tecio.open(str(path), "w") as w:
+            w.write_poly_zone(
+                zone_type=ZoneType.FEPOLYGON,
+                data=[x, y],
+                face_nodes=faces,
+                face_left_elements=left,
+            )
+        assert not path.exists()
+
+
+class TestWritePolyPlt:
+    """PLT output that can be compared byte for byte with the TecIO classic API."""
+
+    def test_write_poly_matches_tecio_classic_output(
+        self, output_path: Callable
+    ) -> None:
+        """``write_poly_zone`` issues the same calls as a TecIO classic program.
+
+        A reference file is written with ``libtecio`` directly, read back, and copied
+        through ``write_poly_zone``. The two files must be identical.
+        """
+        from tecio._io import _copy_zones
+
+        zones = [create_poly_bconn_fine(), create_poly_bconn_coarse()]
+        reference = output_path("write_poly_reference.plt")
+        libtecio.tecini142(
+            str(reference),
+            variables=["x", "y"],
+            title="poly",
+            scratch_dir=str(reference.parent),
+        )
+        for i, (x, y, faces, left, right, *bconn) in enumerate(zones):
+            counts, elems, bzones = bconn if bconn else ([], [], [])
+            libtecio.tecpolyzne142(
+                zone_title=f"zone {i}",
+                zone_type=ZoneType.FEPOLYGON,
+                num_nodes=len(x),
+                num_faces=len(left),
+                num_elements=int(max(left.max(), right.max())) + 1,
+                var_sharing=[0, 0],
+                value_locations=[ValueLocation.NODAL, ValueLocation.NODAL],
+                pas_vars=[0, 0],
+                con_sharing=0,
+                strand=0,
+                solution_time=0.0,
+                total_num_face_nodes=faces.size,
+                num_connected_boundary_faces=len(counts),
+                total_num_boundary_connections=len(elems),
+            )
+            libtecio.tecdat142(x.astype(np.float64), is_double=True)
+            libtecio.tecdat142(y.astype(np.float64), is_double=True)
+            libtecio.tecpolyface142(
+                np.full(len(left), 2, dtype=np.int32),
+                (faces.ravel() + 1).astype(np.int32),
+                (left + 1).astype(np.int32),
+                (right + 1).astype(np.int32),
+            )
+            if len(counts):
+                libtecio.tecpolybconn142(
+                    np.asarray(counts, dtype=np.int32),
+                    (np.asarray(elems) + 1).astype(np.int32),
+                    (np.asarray(bzones) + 1).astype(np.int32),
+                )
+        libtecio.tecend142()
+
+        copy = output_path("write_poly_copy.plt")
+        with (
+            tecio.open(str(reference), "r") as r,
+            tecio.open(
+                str(copy), "w", title=r.title, variables=r.variables, precision="double"
+            ) as w,
+        ):
+            _copy_zones(r, w)
+        assert copy.read_bytes() == reference.read_bytes()
 
 
 # ======================================================================================

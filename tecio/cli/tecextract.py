@@ -22,7 +22,9 @@ subset for use with another tool in a single command.
 :Options:
     ``-z LIST``, ``--zones LIST``
         Comma-separated list of 0-based zone indices to extract (e.g. ``-z
-        0,2,4``). If omitted, all zones are written to the output.
+        0,2,4``). If omitted, all zones are written to the output. A poly zone loses its
+        boundary connections to zones that are not extracted, with a warning, and a
+        boundary face left with no connection becomes an ordinary face.
 
     ``-v LIST``, ``--variables LIST``
         Comma-separated list of 0-based variable indices or exact variable
@@ -97,8 +99,14 @@ from typing import Any
 
 import numpy as np
 
-from .. import TecplotFEZoneReader, TecplotOrderedZoneReader, TecplotSzlWriter, ZoneType
+from .. import (
+    TecplotFEZoneReader,
+    TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
+    TecplotSzlWriter,
+)
 from .. import open as tecio_open
+from .._writer import poly_face_kwargs
 
 # --------------------------------------------------------------------------------------
 # Helpers
@@ -389,13 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         continue
 
                     zt = zone.zone_type
-                    if zt in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-                        print(
-                            f"Warning: zone {zone_num} ('{zone.title}') is "
-                            f"{zt.name} and cannot be written -- skipping.",
-                            file=sys.stderr,
-                        )
-                        continue
+                    zones_before = writer.current_zone
 
                     # Build per-variable metadata for the requested subset.
                     data: list[np.ndarray] = []
@@ -443,6 +445,25 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                     if isinstance(zone, TecplotOrderedZoneReader):
                         writer.write_ordered_zone(data=data, **common_kw)
+                    elif isinstance(zone, TecplotPolyZoneReader):
+                        con_src = zone.shared_connectivity
+                        con_remapped = (
+                            zone_index_map.get(con_src) if con_src is not None else None
+                        )
+                        # Boundary connections follow the compacted zone numbering, a
+                        # zone may also be connected to itself.
+                        zone_map = {**zone_index_map, zone_num: writer.current_zone + 1}
+                        writer.write_poly_zone(
+                            zone_type=zt,
+                            data=data,
+                            con_sharing=con_remapped,
+                            **(
+                                {}
+                                if con_remapped is not None
+                                else poly_face_kwargs(zone, zone_map)
+                            ),
+                            **common_kw,
+                        )
                     elif isinstance(zone, TecplotFEZoneReader):
                         con_src = zone.shared_connectivity
                         con_remapped = (
@@ -467,14 +488,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                     else:
                         raise NotImplementedError(
-                            f"Zone '{zone.title}' is neither an ordered nor a "
-                            "classic FE zone; extraction is not supported for it."
+                            f"Zone '{zone.title}' is neither an ordered, classic FE "
+                            "nor poly zone; extraction is not supported for it."
                         )
 
                     # Record where this source zone landed in the output, so a later
                     # zone sharing from it can point at the real (compacted) index
-                    # instead of falling back to independent data.
-                    zone_index_map[zone_num] = writer.current_zone
+                    # instead of falling back to independent data.  A zone with no
+                    # active data (every variable shared or passive) is skipped by the
+                    # writer and has no output index.
+                    if writer.current_zone > zones_before:
+                        zone_index_map[zone_num] = writer.current_zone
 
     except Exception as exc:  # noqa: BLE001
         print(f"Error: {exc}", file=sys.stderr)

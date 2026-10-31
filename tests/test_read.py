@@ -28,6 +28,9 @@ of the generic/loose checks the ``Onera``-based tests use. This suite:
   that external dependency the same way DAT's ASCII fixtures do, but is meaningfully
   more work per format and is left as a follow-up rather than attempted in this initial
   pass.
+* Poly (FEPOLYHEDRON) zones are read from ``Sphere.plt`` and ``Sphere.dat``. Polygon
+  zones and boundary connnection attributes not explicit in ``Sphere.plt`` are covered
+  by writing and reading back in ``test_write.py``.
 
 Run directly:
 
@@ -45,7 +48,7 @@ import numpy as np
 import pytest
 
 import tecio
-from tecio import DataPacking, ValueLocation, ZoneType
+from tecio import DataPacking, DataType, ValueLocation, ZoneType
 
 # ======================================================================================
 # Cross-format helpers
@@ -385,9 +388,7 @@ class TestGetArray:
 
 
 # ======================================================================================
-# DATAPACKING=POINT parsing -- DAT-only (real, working feature only there; SZL/PLT's
-# rejection of POINT is already covered on the write side in
-# test_write.py::TestDatapackingPoint)
+# DATAPACKING=POINT parsing (DAT-only)
 # ======================================================================================
 
 
@@ -563,6 +564,191 @@ class TestDatPointFormat:
         )
         with pytest.raises(ValueError, match="not evenly divisible"):
             tecio.open(str(path), "r")
+
+
+# ======================================================================================
+# Poly (FEPOLYHEDRON) zones (PLT and DAT only)
+# ======================================================================================
+
+#: Formats that can hold poly zones.
+POLY_FORMATS: list[str] = ["plt", "dat"]
+
+
+@pytest.fixture
+def sphere_file(fmt: str, tests_dir: Path) -> Path:
+    """Resolve the per-format Sphere reference fixture (polyhedral zone)."""
+    path = tests_dir / f"Sphere.{_EXTENSIONS[fmt]}"
+    if not path.exists():
+        pytest.skip(f"No Sphere fixture for format {fmt!r} at {path}")
+    return path
+
+
+@pytest.mark.parametrize("fmt", POLY_FORMATS)
+class TestReadPoly:
+    """Reading the polyhedral Sphere fixture."""
+
+    def test_read_poly_metadata(self, fmt: str, sphere_file: Path) -> None:
+        """Dataset, zone and variable metadata of a FEPOLYHEDRON zone.
+
+        Demonstrates:
+        - ``TecplotPolyZoneReader`` counts: ``num_nodes``, ``num_elements`` and
+          ``num_faces``, plus the boundary connection counts
+        - Poly zones are always BLOCK packed
+        """
+        with tecio.open(str(sphere_file), "r") as r:
+            assert r.title == "Finite-Element Data"
+            assert r.variables == ["X", "Y", "Z", "Cycling"]
+            assert r.num_zones == 1
+
+            zone = r.zones[0]
+            assert isinstance(zone, tecio.TecplotPolyZoneReader)
+            assert zone.title == "Sphere"
+            assert zone.zone_type == ZoneType.FEPOLYHEDRON
+            assert zone.datapacking == DataPacking.BLOCK
+            assert zone.strand_id == 1
+            assert zone.solution_time == 0.0
+            assert zone.shared_connectivity is None
+            assert zone.num_nodes == 5202
+            assert zone.num_elements == 1380
+            assert zone.num_faces == 7238
+            assert zone.num_boundary_faces == 0
+            assert zone.num_boundary_connections == 0
+            for var in zone.variables:
+                assert var.data_type == DataType.DOUBLE
+                assert var.value_location == ValueLocation.NODAL
+
+    def test_read_poly_face_map(self, fmt: str, sphere_file: Path) -> None:
+        """Face arrays: sizes, zero-based indices and the first and last entries.
+
+        The expected values were read from the text of ``Sphere.dat``, which stores the
+        same arrays with one-based indices.
+
+        Demonstrates:
+        - ``face_nodes`` is flat and ``face_node_counts`` gives the nodes of each face
+        - ``face_node_offsets`` has ``num_faces + 1`` entries and slices ``face_nodes``
+        - ``face_left_elements``/``face_right_elements`` are element indices, ``-1`` for no element
+        """
+        with tecio.open(str(sphere_file), "r") as r:
+            zone = r.zones[0]
+
+            counts = zone.face_node_counts
+            assert counts.shape == (7238,)
+            assert counts.sum() == 35145
+            np.testing.assert_array_equal(counts[:10], [4, 4, 4, 4, 4, 4, 6, 6, 4, 4])
+            np.testing.assert_array_equal(counts[-5:], 4)
+            np.testing.assert_array_equal(
+                np.bincount(counts), [0, 0, 0, 4, 3271, 2067, 1583, 289, 23, 1]
+            )
+
+            nodes = zone.face_nodes
+            assert nodes.shape == (35145,)
+            np.testing.assert_array_equal(
+                nodes[:8], [398, 397, 390, 391, 2033, 398, 391, 2027]
+            )
+            np.testing.assert_array_equal(nodes[-5:], [4246, 5011, 4719, 4816, 4814])
+            assert nodes.min() == 0
+            assert nodes.max() == zone.num_nodes - 1
+
+            offsets = zone.face_node_offsets
+            assert offsets.shape == (7239,)
+            assert offsets[0] == 0
+            assert offsets[-1] == 35145
+            np.testing.assert_array_equal(np.diff(offsets), counts)
+            np.testing.assert_array_equal(
+                nodes[offsets[1] : offsets[2]], [2033, 398, 391, 2027]
+            )
+
+            left, right = zone.face_left_elements, zone.face_right_elements
+            assert left.shape == right.shape == (7238,)
+            np.testing.assert_array_equal(left[:10], [0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
+            np.testing.assert_array_equal(left[-5:], [1366, 1367, 1368, 1374, 1376])
+            np.testing.assert_array_equal(
+                right[:10], [176, 213, 30, 216, 264, 32, 598, -1, 254, 169]
+            )
+            np.testing.assert_array_equal(right[-5:], [1369, 1378, 1371, 1376, 1377])
+
+    def test_read_poly_face_map_is_consistent(
+        self, fmt: str, sphere_file: Path
+    ) -> None:
+        """Every element is a closed polyhedron, so the face map must add up."""
+        with tecio.open(str(sphere_file), "r") as r:
+            zone = r.zones[0]
+            left, right = zone.face_left_elements, zone.face_right_elements
+
+            # Left elements are always set, right elements are -1 on the 330 faces
+            # that lie on the outer surface.
+            assert left.min() == 0
+            assert left.max() == 1376
+            assert right.min() == -1
+            assert right.max() == 1379
+            assert np.count_nonzero(right == -1) == 330
+
+            # Every element is referenced, with between 7 and 20 faces each.
+            per_element = np.bincount(np.concatenate([left, right[right >= 0]]))
+            assert per_element.shape == (1380,)
+            assert per_element.min() == 7
+            assert per_element.max() == 20
+            assert per_element.sum() == 2 * 7238 - 330
+
+    def test_read_poly_variables(self, fmt: str, sphere_file: Path) -> None:
+        """Nodal variables of a poly zone have one value per node.
+
+        The expected values were read from the text of ``Sphere.dat``.
+        """
+        with tecio.open(str(sphere_file), "r") as r:
+            zone = r.zones[0]
+            x, y, z, cycling = (zone.get_array(name) for name in r.variables)
+            for values in (x, y, z, cycling):
+                assert values.shape == (5202,)
+                assert values.dtype == np.float64
+
+            np.testing.assert_allclose(x[[0, -1]], [0.1545234621, -2.117949963])
+            np.testing.assert_allclose(y[[0, -1]], [2.923508644, -0.135193646])
+            np.testing.assert_allclose(z[[0, -1]], [-0.5178240538, 2.090382576])
+            np.testing.assert_allclose(
+                [x.sum(), y.sum(), z.sum()],
+                [144.2886312321637, -52.22106074105915, -52.01794189945177],
+                rtol=1e-8,
+            )
+            # "Cycling" counts the nodes from 1.
+            np.testing.assert_array_equal(cycling, np.arange(1, 5203))
+
+    def test_read_poly_arrays_are_cached(self, fmt: str, sphere_file: Path) -> None:
+        """Counts come from the zone header; face arrays load once, on first use."""
+        with tecio.open(str(sphere_file), "r") as r:
+            zone = r.zones[0]
+            assert zone.num_faces == 7238
+            assert "F=7238" in zone._repr_size()
+            assert zone._array_cache == {}
+            assert zone.face_nodes is zone.face_nodes
+            assert zone.face_node_offsets is zone.face_node_offsets
+            with pytest.raises(AttributeError):
+                zone.num_faces = 3  # type: ignore[misc]
+
+
+def test_read_poly_plt_matches_dat(tests_dir: Path) -> None:
+    """The PLT and DAT exports of the Sphere zone read back the same."""
+    with (
+        tecio.open(str(tests_dir / "Sphere.plt"), "r") as plt,
+        tecio.open(str(tests_dir / "Sphere.dat"), "r") as dat,
+    ):
+        a, b = plt.zones[0], dat.zones[0]
+        for name in (
+            "face_nodes",
+            "face_node_counts",
+            "face_left_elements",
+            "face_right_elements",
+        ):
+            np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
+        for name in plt.variables:
+            np.testing.assert_allclose(a.get_array(name), b.get_array(name), rtol=1e-8)
+
+
+def test_peek_reports_poly_zone(tests_dir: Path) -> None:
+    """``tecio.peek`` lists a poly zone of a PLT file without loading its face map."""
+    summary = tecio.peek(str(tests_dir / "Sphere.plt"))
+    assert summary.zones[0].zone_type == ZoneType.FEPOLYHEDRON
+    assert summary.zones[0].num_elements == 1380
 
 
 # ======================================================================================

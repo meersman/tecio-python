@@ -186,20 +186,14 @@ import numpy as np
 from .. import (
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotSzlWriter,
     TecplotWriter,
     TecplotZoneReader,
-    ZoneType,
 )
 from .. import open as tecio_open
-
-# --------------------------------------------------------------------------------------
-# Constants
-# --------------------------------------------------------------------------------------
-
-#: FE zone types that the Write API cannot copy.
-_FE_POLY: frozenset[ZoneType] = frozenset({ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON})
+from .._writer import poly_face_kwargs
 
 
 class _ArgError(Exception):
@@ -659,6 +653,15 @@ def _write_zone_data(
 
     if isinstance(zone, TecplotOrderedZoneReader):
         writer.write_ordered_zone(data=writer_data, **common_kw)
+    elif isinstance(zone, TecplotPolyZoneReader):
+        con_sharing = zone.shared_connectivity
+        writer.write_poly_zone(
+            zone_type=zt,
+            data=writer_data,
+            con_sharing=con_sharing,
+            **({} if con_sharing is not None else poly_face_kwargs(zone)),
+            **common_kw,
+        )
     elif isinstance(zone, TecplotFEZoneReader):
         con_sharing = zone.shared_connectivity
         fe_kw = common_kw.copy()
@@ -678,7 +681,7 @@ def _write_zone_data(
         )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered nor a classic FE "
+            f"Zone '{zone.title}' is neither an ordered, classic FE nor poly "
             "zone; writing is not supported for it."
         )
 
@@ -747,16 +750,7 @@ def _run_strip_or_export(args: argparse.Namespace, src: Path) -> int:
                     variables=reader.variables,
                     file_type=reader.file_type,
                 ) as writer:
-                    for i, zone in enumerate(reader.zones):
-                        zt = zone.zone_type
-                        if zt in _FE_POLY:
-                            print(
-                                f"Warning: zone {i} ('{zone.title}') is "
-                                f"{zt.name} and cannot be copied -- skipping.",
-                                file=sys.stderr,
-                            )
-                            continue
-
+                    for zone in reader.zones:
                         writer_data, writer_locs, passive_vars, var_sharing, _ = (
                             _process_zone(zone)
                         )
@@ -930,16 +924,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 writer.flush_aux()
 
                 for zone_num, zone in enumerate(reader.zones):
-                    zt = zone.zone_type
-
-                    if zt in _FE_POLY:
-                        print(
-                            f"Warning: zone {zone_num} ('{zone.title}') is "
-                            f"{zt.name} and cannot be copied -- skipping.",
-                            file=sys.stderr,
-                        )
-                        continue
-
                     (
                         writer_data,
                         writer_locs,

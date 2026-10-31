@@ -88,12 +88,14 @@ import numpy as np
 from .. import (
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotSzlWriter,
     TecplotWriter,
     ZoneType,
 )
 from .. import open as tecio_open
+from .._writer import poly_face_kwargs
 
 # --------------------------------------------------------------------------------------
 # Constants
@@ -204,28 +206,20 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
     """Stream all zones from *reader* into the open *writer*.
 
-    Each zone is reproduced at its original data type and value location.
-    Connectivity (node maps) is copied verbatim for FE zones, along with
-    face-neighbor connections where present. Zone-level auxiliary data is
-    forwarded as well.
+    Each zone is reproduced at its original data type and value location.  Connectivity
+    (node maps) is copied verbatim for FE zones, along with face-neighbor connections
+    where present. Zone-level auxiliary data is forwarded as well.
 
     Args:
         reader: An open reader instance (SZL, PLT, or DAT).
         writer: An open writer instance for the target format.
 
     Raises:
-        NotImplementedError: If a FEPOLYGON or FEPOLYHEDRON zone is
-            encountered, because the writer API does not yet support them.
+        NotImplementedError: If attempting to pass a poly zone to a SZL writer.
 
     """
     for zone in reader.zones:
         zt = zone.zone_type
-
-        if zt in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-            raise NotImplementedError(
-                f"Zone '{zone.title}' has unsupported type {zt.name}. "
-                "FEPOLYGON and FEPOLYHEDRON zones cannot be converted."
-            )
 
         # Collect per-variable arrays and metadata. Only active variables are
         # appended; passive_vars/var_sharing name the rest sparsely.
@@ -278,10 +272,19 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
                 con_sharing=con_sharing,
                 **fe_kw,
             )
+        elif isinstance(zone, TecplotPolyZoneReader):
+            con_sharing = zone.shared_connectivity
+            writer.write_poly_zone(
+                zone_type=zt,
+                data=data,
+                con_sharing=con_sharing,
+                **({} if con_sharing is not None else poly_face_kwargs(zone)),
+                **common_kw,
+            )
         else:
             raise NotImplementedError(
-                f"Zone '{zone.title}' is neither an ordered nor a classic FE "
-                "zone; conversion is not supported for it."
+                f"Zone '{zone.title}' is not an ordered, FE or poly zone; "
+                "conversion is not supported for it."
             )
 
 

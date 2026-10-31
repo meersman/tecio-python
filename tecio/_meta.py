@@ -56,26 +56,30 @@ class ZoneMeta:
     variable-type arrays of a ``TECZNE142`` zone header.
 
     Attributes:
-        index:                0-based index of this zone within the dataset.
-        title:                Zone title.
-        zone_type:            The zone's :class:`~tecio.libtecio.ZoneType`.
-        solution_time:        Solution time (``0.0`` for static zones).
-        strand_id:            Strand ID (``0`` for static zones).
-        num_aux_items:        Number of zone-level auxiliary items written.
-        dimensions:           Nodal ``(imax, jmax, kmax)`` for ORDERED zones, else
-                              ``None``.
-        num_nodes:            Node count for FE zones, else ``None``.
-        num_elements:         Element count for FE zones, else ``None``.
-        face_neighbor_mode:   The zone's :class:`~tecio.FaceNeighborMode`, else
-                              ``None`` if it has no face-neighbor connections.
-        num_face_connections: Number of face-neighbor connections written,
-                              else ``None`` if it has none.
-        value_locations:      Per-variable value location, full dataset length.
-        passive_vars:         Per-variable passive flags, full dataset length.
-        shared_vars:          Per-variable share-from zone index, or ``None`` for not
-                              shared, full dataset length.
-        data_types:           Per-variable data type, full dataset length.
-
+        index:                    0-based index of this zone within the dataset.
+        title:                    Zone title.
+        zone_type:                The zone's :class:`~tecio.libtecio.ZoneType`.
+        solution_time:            Solution time (``0.0`` for static zones).
+        strand_id:                Strand ID (``0`` for static zones).
+        num_aux_items:            Number of zone-level auxiliary items written.
+        dimensions:               Nodal ``(imax, jmax, kmax)`` for ORDERED zones, else
+                                  ``None``.
+        num_nodes:                Node count for FE zones, else ``None``.
+        num_elements:             Element count for FE zones, else ``None``.
+        face_neighbor_mode:       The zone's :class:`~tecio.FaceNeighborMode`, else
+                                  ``None`` if it has no face-neighbor connections.
+        num_face_connections:     Number of face-neighbor connections written, else
+                                  ``None`` if it has none.
+        num_faces:                Face count for poly zones, else ``None``.
+        total_face_nodes:         Total face-node entries for poly zones, else ``None``.
+        num_boundary_faces:       Boundary face count for poly zones, else ``None``.
+        num_boundary_connections: Total boundary connections for poly zones, else
+                                  ``None``.
+        value_locations:          Per-variable value location, full dataset length.
+        passive_vars:             Per-variable passive flags, full dataset length.
+        shared_vars:              Per-variable share-from zone index, or ``None`` for
+                                  not shared, full dataset length.
+        data_types:               Per-variable data type, full dataset length.
     """
 
     index: int
@@ -90,6 +94,11 @@ class ZoneMeta:
     num_elements: int | None = None
     face_neighbor_mode: FaceNeighborMode | None = None
     num_face_connections: int | None = None
+    # Poly zones (FEPOLYGON/FEPOLYHEDRON) also record their face-map sizes.
+    num_faces: int | None = None
+    total_face_nodes: int | None = None
+    num_boundary_faces: int | None = None
+    num_boundary_connections: int | None = None
     # Per-variable descriptors (length == dataset variable count).
     value_locations: tuple[ValueLocation, ...] = ()
     passive_vars: tuple[bool, ...] = ()
@@ -100,6 +109,16 @@ class ZoneMeta:
     def nodal_shape(self) -> tuple[int, int, int] | None:
         """Nodal ``(imax, jmax, kmax)`` for ORDERED zones, else ``None``."""
         return self.dimensions
+
+    @property
+    def num_cells(self) -> int | None:
+        """Cell count of any zone type, or ``None`` if not recorded."""
+        if self.num_elements is not None:
+            return self.num_elements
+        shape = self.cell_shape
+        if shape is None:
+            return None
+        return shape[0] * shape[1] * shape[2]
 
     @property
     def cell_shape(self) -> tuple[int, ...] | None:

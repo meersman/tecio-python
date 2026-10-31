@@ -100,11 +100,34 @@ if isinstance(zone, tecio.TecplotOrderedZoneReader):
     zone.dimensions  # (I, J, K)
 elif isinstance(zone, tecio.TecplotFEZoneReader):
     zone.node_map  # ndarray | None
+elif isinstance(zone, tecio.TecplotPolyZoneReader):
+    zone.face_nodes  # ndarray
 ```
 
-`TecplotFEZoneReader` covers finite-element zones, classic element types,
-plus FEPOLYGON/FEPOLYHEDRON/FEMIXED metadata (connectivity for those three
-doesn't work yet).
+`TecplotFEZoneReader` covers the classic finite-element types (and FEMIXED
+metadata). FEPOLYGON and FEPOLYHEDRON zones are returned as
+`TecplotPolyZoneReader` (PLT v111 and later, and DAT; SZL does not yet support
+poly zones).
+
+### Poly zones
+
+Face arrays are returned as stored on disk, 0-based:
+
+| Property | Meaning |
+|---|---|
+| `face_node_counts` | Nodes per face (all `2` for polygons) |
+| `face_node_offsets` | `len(face_nodes)` offsets, length `num_faces + 1` |
+| `face_nodes` | Flat 0-based node indices of every face |
+| `face_left_elements`, `face_right_elements` | 0-based element per face; `-1` = none, `-(b + 2)` = boundary face `b` |
+| `boundary_connection_counts` | Connections per boundary face |
+| `boundary_connection_elements` | 0-based elements in other zones or with several neighbors |
+| `boundary_connection_zones` | 0-based zone of each connection |
+
+The boundary arrays are empty when the zone has no boundary faces.
+`num_nodes`, `num_elements`, `num_faces`, `num_boundary_faces`,
+`num_boundary_connections` and `shared_connectivity` are also available. The
+left and right elements cover face neighbors, so poly zones have no separate
+face-neighbor connections.
 
 ```{eval-rst}
 .. currentmodule:: tecio
@@ -115,6 +138,7 @@ doesn't work yet).
    TecplotZoneReader
    TecplotOrderedZoneReader
    TecplotFEZoneReader
+   TecplotPolyZoneReader
 ```
 
 ## `TecplotVariableReader`

@@ -105,8 +105,14 @@ from typing import Any
 
 import numpy as np
 
-from .. import TecplotFEZoneReader, TecplotOrderedZoneReader, TecplotSzlWriter, ZoneType
+from .. import (
+    TecplotFEZoneReader,
+    TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
+    TecplotSzlWriter,
+)
 from .. import open as tecio_open
+from .._writer import poly_face_kwargs
 
 # --------------------------------------------------------------------------------------
 # Argument parsing
@@ -410,14 +416,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for zone_num, zone in enumerate(reader.zones):
                     zt = zone.zone_type
 
-                    if zt in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-                        print(
-                            f"Warning: zone {zone_num} ('{zone.title}') is "
-                            f"{zt.name} and cannot be written -- skipping.",
-                            file=sys.stderr,
-                        )
-                        continue
-
                     apply_scale = args.zone is None or zone_num == args.zone
 
                     data: list[np.ndarray] = []
@@ -465,6 +463,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                     if isinstance(zone, TecplotOrderedZoneReader):
                         writer.write_ordered_zone(data=data, **common_kw)
+                    elif isinstance(zone, TecplotPolyZoneReader):
+                        con_sharing = zone.shared_connectivity
+                        writer.write_poly_zone(
+                            zone_type=zt,
+                            data=data,
+                            con_sharing=con_sharing,
+                            **(
+                                {}
+                                if con_sharing is not None
+                                else poly_face_kwargs(zone)
+                            ),
+                            **common_kw,
+                        )
                     elif isinstance(zone, TecplotFEZoneReader):
                         con_sharing = zone.shared_connectivity
                         fe_kw = common_kw.copy()
@@ -485,7 +496,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else:
                         raise NotImplementedError(
                             f"Zone '{zone.title}' is neither an ordered nor a "
-                            "classic FE zone; scaling is not supported for it."
+                            "classic FE or poly zone; scaling is not supported for it."
                         )
 
     except Exception as exc:  # noqa: BLE001

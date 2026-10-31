@@ -79,14 +79,18 @@ duplicated in every merged zone.
     ``--merge-grid [LIST]``
         Detect and share grid data (coordinate variables, and for FE zones,
         connectivity) across zones with matching zone type and dimensions, instead of
-        writing it fresh in every merged zone. Zones are compared by a
-        ``(zone_type, num_nodes, num_elements)`` signature; the first zone with a given
-        signature (in file, then zone, order) writes its grid fresh, and every later
-        zone with a matching signature, whether from the same file or a different one,
-        shares from it instead. This is not a rigorous check that the underlying data
-        is actually identical, just that it plausibly could be, a false match (e.g. two
-        genuinely different blocks that happen to share dimensions) would silently
-        share the wrong grid.
+        writing it fresh in every merged zone. Zones are compared by a ``(zone_type,
+        num_nodes, num_elements)`` signature; the first zone with a given signature (in
+        file, then zone, order) writes its grid fresh, and every later zone with a
+        matching signature, whether from the same file or a different one, shares from
+        it instead. This is not a rigorous check that the underlying data is actually
+        identical, just that it plausibly could be, a false match (e.g. two genuinely
+        different blocks that happen to share dimensions) would silently share the wrong
+        grid. Polygon and polyhedron zones are matched on a hash of their full face map
+        for simplicity. Poly zones with boundary face connections cannot be shared
+        because boundary connections must be uniquely defined. If a zone only contains
+        grid or passive variables, it cannot be merged because there would be no active
+        data in the zone.
 
         Given with no value, grid variables are found automatically by name (``x``,
         ``X``, ``x-coordinate``, ``xgrid``, and similar common names for X/Y/Z). Given a
@@ -169,13 +173,14 @@ import numpy as np
 from .. import (
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotSzlWriter,
     TecplotWriter,
     TecplotZoneReader,
-    ZoneType,
 )
 from .. import open as tecio_open
+from .._writer import poly_face_kwargs
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -562,6 +567,24 @@ def _build_var_union(
     return union_vars, index_maps
 
 
+def _has_own_data(
+    zone: TecplotZoneReader,
+    local_index_map: list[int | None],
+    grid_var_indices: set[int] | None,
+) -> bool:
+    """Return whether *zone* has a non-grid variable that is neither shared nor passive.
+
+    Without one, sharing the grid leaves nothing to write and the zone is dropped.
+    """
+    for union_i, local_idx in enumerate(local_index_map, start=1):
+        if local_idx is None or (grid_var_indices and union_i in grid_var_indices):
+            continue
+        var = zone.variables[local_idx]
+        if not var.is_passive() and var.shared_zone is None:
+            return True
+    return False
+
+
 def _write_zone(
     writer: TecplotWriter,
     zone: TecplotZoneReader,
@@ -669,12 +692,29 @@ def _write_zone(
 
     if isinstance(zone, TecplotOrderedZoneReader):
         writer.write_ordered_zone(data=data, **common_kw)
+    elif isinstance(zone, TecplotPolyZoneReader):
+        if grid_var_indices is not None and grid_reference is not None:
+            # The reference zone has an identical face map (checked by hash).
+            con_remapped: int | None = grid_reference
+        else:
+            con_src = zone.shared_connectivity
+            con_remapped = zone_index_map.get(con_src) if con_src is not None else None
+        # Boundary connections follow the output numbering of this file's zones, a zone
+        # may also be connected to itself.
+        zone_map = {**zone_index_map, zone.zone_index: writer.current_zone + 1}
+        writer.write_poly_zone(
+            zone_type=zt,
+            data=data,
+            con_sharing=con_remapped,
+            **({} if con_remapped is not None else poly_face_kwargs(zone, zone_map)),
+            **common_kw,
+        )
     elif isinstance(zone, TecplotFEZoneReader):
         if grid_var_indices is not None and grid_reference is not None:
             # Share connectivity from the same reference zone as the grid variables, a
             # matching (zone_type, num_nodes, num_elements) signature implies the same
             # mesh, node map included.
-            con_remapped: int | None = grid_reference
+            con_remapped = grid_reference
         else:
             con_src = zone.shared_connectivity
             con_remapped = zone_index_map.get(con_src) if con_src is not None else None
@@ -695,7 +735,7 @@ def _write_zone(
         )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered nor a classic FE "
+            f"Zone '{zone.title}' is neither an ordered, classic FE nor poly "
             "zone; merging is not supported for it."
         )
 
@@ -826,7 +866,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             total_zones = 0
             # Persists sharing registry across every input file for merge grid option
-            signature_registry: dict[tuple[ZoneType, int, int], int] = {}
+            signature_registry: dict[tuple[Any, ...], int] = {}
             for fi, (reader, imap) in enumerate(zip(readers, index_maps, strict=False)):
                 sol_time = times[fi] if times is not None else None
 
@@ -838,14 +878,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for zi, zone in enumerate(reader.zones):
                     zone_num = zi + 1
                     zt = zone.zone_type
-                    if zt in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-                        print(
-                            f"Warning: zone '{zone.title}' in "
-                            f"{input_paths[fi].name} is {zt.name} "
-                            "-- skipping.",
-                            file=sys.stderr,
-                        )
-                        continue
 
                     # Automatically set all. --strand overrides this with a single,
                     # fixed strand ID for every zone instead. --strand-offset then
@@ -858,13 +890,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                         s_id = zone_num + args.strand_offset
 
                     grid_reference: int | None = None
-                    signature: tuple[ZoneType, int, int] | None = None
-                    if grid_var_indices is not None and isinstance(
-                        zone, (TecplotOrderedZoneReader, TecplotFEZoneReader)
-                    ):
-                        signature = (zt, zone.num_nodes, zone.num_elements)
-                        grid_reference = signature_registry.get(signature)
+                    signature: tuple[Any, ...] | None = None
+                    if grid_var_indices is not None:
+                        if isinstance(
+                            zone, (TecplotOrderedZoneReader, TecplotFEZoneReader)
+                        ):
+                            signature = (zt, zone.num_nodes, zone.num_elements)
+                        elif (
+                            isinstance(zone, TecplotPolyZoneReader)
+                            and not zone.num_boundary_faces
+                        ):
+                            # A poly grid is matched on its face map, not only its
+                            # counts. Zones with boundary faces cannot be sharing
+                            # sources, so they always write their own grid.
+                            signature = (zt, zone._face_map_digest())
+                        if signature is not None:
+                            grid_reference = signature_registry.get(signature)
 
+                    # A zone that would hold no data of its own is skipped by the
+                    # writer, so write its grid fresh rather than lose the zone.
+                    if grid_reference is not None and not _has_own_data(
+                        zone, imap, grid_var_indices
+                    ):
+                        grid_reference = None
+
+                    zones_before = writer.current_zone
                     _write_zone(
                         writer=writer,
                         zone=zone,
@@ -877,6 +927,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         grid_var_indices=grid_var_indices,
                         grid_reference=grid_reference,
                     )
+                    if writer.current_zone == zones_before:
+                        continue  # skipped as empty, nothing to map or register
                     zone_index_map[zi] = writer.current_zone
                     if signature is not None and grid_reference is None:
                         # First zone with this signature should write grid, every later

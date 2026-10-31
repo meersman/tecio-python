@@ -21,13 +21,14 @@ Notes:
       StrandID, SolutionTime, value location, face-neighbor, or aux-data. v107
       (``#!TDV107``) and v111 (``#!TDV111``) are structurally v112 with two deltas each:
       v107 has no file-level FileType field and no per-zone "face neighbors complete"
-      flag; v111 has one extra always-0 zone-header INT32 of unidentified
-      purpose. Legacy files are read-only; :mod:`._plt_write` only ever writes the
-      current format.
+      flag; v111 has one extra INT32 value right after the zone type (the data-packing
+      field, 0 = block) of unidentified purpose. Legacy files are read-only;
+      :mod:`._plt_write` only ever writes the current format.
 
 Limitations:
-    * FEPOLYGON and FEPOLYHEDRON zones are parsed for metadata but face-map reading is
-      not yet implemented (``node_map`` returns None for those types).
+    * FEPOLYGON and FEPOLYHEDRON zones are read as
+      :class:`~tecio._reader.TecplotPolyZoneReader` (v111 and v112). The v191 face-map
+      layout is untested, and v107 files cannot contain poly zones.
     * Bit-packed data (DataType 6) is not supported and raises NotImplementedError.
     * Legacy files have no passive-variable.
 
@@ -59,9 +60,11 @@ from ._constants import (
 )
 from ._containers import ZoneList
 from ._reader import (
+    PolyArrayKey,
     TecplotAuxDataReader,
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotVariableReader,
     TecplotZoneReader,
@@ -98,6 +101,11 @@ _NODES_PER_ELEMENT: dict[ZoneType, int] = {
     ZoneType.FETETRAHEDRON: 4,
     ZoneType.FEBRICK: 8,
 }
+
+_POLY_TYPES: frozenset[ZoneType] = frozenset({
+    ZoneType.FEPOLYGON,
+    ZoneType.FEPOLYHEDRON,
+})
 
 # Faces per element
 _FACES_PER_ELEMENT: dict[ZoneType, int] = {
@@ -259,11 +267,17 @@ class _ZoneMeta:
     num_nodes: int = 0
     num_elements: int = 0
 
-    # Poly zone extras
+    # Poly zone extras. num_boundary_faces is the public count; the header stores one
+    # more when any exist (TecIO reserves entry 0 of the boundary tables), kept as
+    # boundary_table_entries since it sizes the on-disk offsets table.
     num_faces: int = 0
     total_face_nodes: int = 0
     num_boundary_faces: int = 0
+    boundary_table_entries: int = 0
     num_boundary_connections: int = 0
+    # Face-map blocks on disk, {key: (file_offset, count, itemsize)}, empty for zones
+    # that share connectivity.
+    poly_sections: dict[str, tuple[int, int, int]] = field(default_factory=dict)
 
     # Variable metadata (per variable)
     var_data_types: list[DataType] = field(default_factory=list)
@@ -497,6 +511,16 @@ class _PltParser:
 
         # ZoneType
         meta.zone_type = ZoneType(_read_int32(fp, byte_order))
+        if self._file_version == "v107" and meta.zone_type in _POLY_TYPES:
+            raise PltReadError("Poly zones are not supported in v107 files.")
+
+        # Manual tests with v111 showed one extra INT32 value of 0 here. Its unknown what
+        # the purpose is, but possible that data formats different that what was
+        # manually tested could cause an unreported error here.
+        if self._file_version == "v111" and _read_int32(fp, byte_order) != 0:
+            raise PltReadError(
+                "v111 zone with a nonzero data-packing field (POINT) is not supported."
+            )
 
         # Variable locations
         # PLT spec: 0 = Node, 1 = Cell Centered — opposite of the input ValueLocation
@@ -531,12 +555,6 @@ class _PltParser:
             if zt in fe_types and self._file_version != "v107":
                 _read_int32(fp, byte_order)
 
-        # Manual tests with v111 showed one extra INT32 value of 0 here. Its unknown what
-        # the purpose is, but possible that data formats different that what was
-        # manually tested could cause an unreported error here.
-        if self._file_version == "v111":
-            _read_int32(fp, byte_order)
-
         # Dimensions / element counts
         if meta.zone_type == ZoneType.ORDERED:
             meta.i_max = _read_int32(fp, byte_order)
@@ -546,13 +564,16 @@ class _PltParser:
             meta.num_nodes = _read_int32(fp, byte_order)
 
             if meta.zone_type in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-                if v191:
+                if v191:  # pragma: no cover
+                    # v191 stores only the two counts, as INT64. It has no boundary
+                    # counts in the zone header, so no boundary sections are read.
                     meta.num_faces = _read_int64(fp, byte_order)
                     meta.total_face_nodes = _read_int64(fp, byte_order)
                 else:
                     meta.num_faces = _read_int32(fp, byte_order)
                     meta.total_face_nodes = _read_int32(fp, byte_order)
-                    meta.num_boundary_faces = _read_int32(fp, byte_order)
+                    meta.boundary_table_entries = _read_int32(fp, byte_order)
+                    meta.num_boundary_faces = max(meta.boundary_table_entries - 1, 0)
                     meta.num_boundary_connections = _read_int32(fp, byte_order)
 
             meta.num_elements = _read_int32(fp, byte_order)
@@ -790,9 +811,8 @@ class _PltParser:
                 self._record_face_connections(fp, meta)
             return
 
-        if zt in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-            # Poly face map (complex structure, skip for now)
-            self._skip_poly_face_map(fp, meta)
+        if zt in _POLY_TYPES:
+            self._record_poly_face_map(fp, meta)
             return
 
         # Simple FE zones
@@ -913,41 +933,43 @@ class _PltParser:
         meta.num_face_connections = int(elem_idx.size)
         meta.face_connections_eager = triples
 
-    def _skip_poly_face_map(self, fp: io.BufferedIOBase, meta: _ZoneMeta) -> None:
-        """Skip the face-map block for FEPOLYGON / FEPOLYHEDRON zones."""
-        zt = meta.zone_type
+    def _record_poly_face_map(self, fp: io.BufferedIOBase, meta: _ZoneMeta) -> None:
+        """Record the offsets of the face-map blocks of a poly zone and skip them.
 
+        Layout (all INT32 unless noted): polyhedra start with the face node offsets
+        (``nf + 1``, or per-face counts in v191), then face nodes, left elements, and
+        right elements. Polygons omit the first block, every face has 2 nodes. When
+        boundary faces exist, the boundary connection offsets (one more entry than the
+        stored table size), elements, and zones follow. Zones are INT16 in v111.
+        """
         if meta.connectivity_shared_zone >= 0:
             return
 
-        v191 = meta.is_v191
         nf = meta.num_faces
-        fn = meta.total_face_nodes
-        nbf = meta.num_boundary_faces
         nbc = meta.num_boundary_connections
+        sections = meta.poly_sections
 
-        if zt == ZoneType.FEPOLYHEDRON:
-            if v191:
-                # Face node count per face (INT32 * nf)
-                fp.seek(nf * 4, os.SEEK_CUR)
+        def take(key: str, count: int, itemsize: int = 4) -> None:
+            sections[key] = (fp.tell(), count, itemsize)
+            fp.seek(count * itemsize, os.SEEK_CUR)
+
+        if meta.zone_type == ZoneType.FEPOLYHEDRON:
+            if meta.is_v191:  # pragma: no cover
+                take("face_node_counts", nf)
             else:
-                # Face node offsets (INT32 * (nf + 1))
-                fp.seek((nf + 1) * 4, os.SEEK_CUR)
+                take("face_node_offsets", nf + 1)
+        take("face_nodes", meta.total_face_nodes)
+        take("face_left_elements", nf)
+        take("face_right_elements", nf)
 
-        # Face nodes (INT32 * fn)
-        fp.seek(fn * 4, os.SEEK_CUR)
-        # Left elements (INT32 * nf)
-        fp.seek(nf * 4, os.SEEK_CUR)
-        # Right elements (INT32 * nf)
-        fp.seek(nf * 4, os.SEEK_CUR)
-
-        if nbf > 0:
-            # Boundary face connection offsets (INT32 * (nbf + 1))
-            fp.seek((nbf + 1) * 4, os.SEEK_CUR)
-            # Boundary connection elements (INT32 * nbc)
-            fp.seek(nbc * 4, os.SEEK_CUR)
-            # Boundary connection zones (INT32 * nbc)
-            fp.seek(nbc * 4, os.SEEK_CUR)
+        if meta.boundary_table_entries > 0:
+            take("boundary_offsets", meta.boundary_table_entries + 1)
+            take("boundary_connection_elements", nbc)
+            take(
+                "boundary_connection_zones",
+                nbc,
+                2 if self._file_version == "v111" else 4,
+            )
 
 
 # ======================================================================================
@@ -1268,6 +1290,30 @@ def _load_plt_variables(
     ]
 
 
+def _resolve_connectivity_meta(
+    meta: _ZoneMeta, all_metas: list[_ZoneMeta] | None
+) -> _ZoneMeta | None:
+    """Return the :class:`_ZoneMeta` that contains the *meta* connectivity.
+
+    For a zone with its own connectivity this is *meta* itself. For a zone that shares
+    connectivity, the chain of ``connectivity_shared_zone`` references is followed to
+    the owning zone (with a cycle/range guard against malformed files). Returns None
+    when the share cannot be resolved, e.g. when *all_metas* was not supplied.
+    """
+    if meta.connectivity_shared_zone < 0:
+        return meta
+    if all_metas is None:
+        return None
+    seen: set[int] = set()
+    while meta.connectivity_shared_zone >= 0:
+        src = meta.connectivity_shared_zone  # zero-based file value
+        if src in seen or src >= len(all_metas):
+            return None  # cycle or out-of-range: malformed file
+        seen.add(src)
+        meta = all_metas[src]
+    return meta
+
+
 class TecplotPltOrderedZoneReader(TecplotOrderedZoneReader):
     """Ordered (IJK) zone reader for PLT files.
 
@@ -1279,14 +1325,14 @@ class TecplotPltOrderedZoneReader(TecplotOrderedZoneReader):
     __slots__ = (
         "_file_path",
         "_meta",
-        "num_vars",
+        "_num_vars",
         "_var_names",
         "_byte_order",
         "_all_metas",
     )
     _file_path: str | os.PathLike
     _meta: _ZoneMeta
-    num_vars: int
+    _num_vars: int
     _var_names: list[str]
     _byte_order: str
     _all_metas: list[_ZoneMeta] | None
@@ -1315,7 +1361,7 @@ class TecplotPltOrderedZoneReader(TecplotOrderedZoneReader):
         )
         object.__setattr__(self, "_file_path", file_path)
         object.__setattr__(self, "_meta", meta)
-        object.__setattr__(self, "num_vars", num_vars)
+        object.__setattr__(self, "_num_vars", num_vars)
         object.__setattr__(self, "_var_names", var_names)
         object.__setattr__(self, "_byte_order", byte_order)
         object.__setattr__(self, "_all_metas", all_metas)
@@ -1325,7 +1371,7 @@ class TecplotPltOrderedZoneReader(TecplotOrderedZoneReader):
             self._file_path,
             self._meta,
             self.zone_index,
-            self.num_vars,
+            self._num_vars,
             self._var_names,
             self._byte_order,
             self._all_metas,
@@ -1346,14 +1392,14 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
     __slots__ = (
         "_file_path",
         "_meta",
-        "num_vars",
+        "_num_vars",
         "_var_names",
         "_byte_order",
         "_all_metas",
     )
     _file_path: str | os.PathLike
     _meta: _ZoneMeta
-    num_vars: int
+    _num_vars: int
     _var_names: list[str]
     _byte_order: str
     _all_metas: list[_ZoneMeta] | None
@@ -1387,7 +1433,7 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
         )
         object.__setattr__(self, "_file_path", file_path)
         object.__setattr__(self, "_meta", meta)
-        object.__setattr__(self, "num_vars", num_vars)
+        object.__setattr__(self, "_num_vars", num_vars)
         object.__setattr__(self, "_var_names", var_names)
         object.__setattr__(self, "_byte_order", byte_order)
         object.__setattr__(self, "_all_metas", all_metas)
@@ -1397,44 +1443,18 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
             self._file_path,
             self._meta,
             self.zone_index,
-            self.num_vars,
+            self._num_vars,
             self._var_names,
             self._byte_order,
             self._all_metas,
         )
 
     def _resolve_connectivity_meta(self) -> _ZoneMeta | None:
-        """Return the :class:`_ZoneMeta` that owns this zone's connectivity.
-
-        For a zone with its own connectivity this is simply ``self._meta``.  For a zone
-        that shares connectivity, the chain of ``connectivity_shared_zone`` references
-        is followed to the owning zone (with a cycle/range guard against malformed
-        files). Returns None when the share cannot be resolved, e.g. when ``all_metas``
-        was not supplied at construction.
-        """
-        meta = self._meta
-        if meta.connectivity_shared_zone < 0:
-            return meta
-        if self._all_metas is None:
-            return None
-        seen: set[int] = set()
-        while meta.connectivity_shared_zone >= 0:
-            src = meta.connectivity_shared_zone  # zero-based file value
-            if src in seen or src >= len(self._all_metas):
-                return None  # cycle or out-of-range: malformed file
-            seen.add(src)
-            meta = self._all_metas[src]
-        return meta
+        """Return the :class:`_ZoneMeta` that owns this zone's connectivity."""
+        return _resolve_connectivity_meta(self._meta, self._all_metas)
 
     def _load_node_map(self) -> npt.NDArray[np.int64] | None:
-        """Read this zone's node connectivity.
-
-        Returns None for FEPOLYGON/FEPOLYHEDRON zones, face-map reading is not yet
-        implemented (see module docstring Limitations).
-        """
-        if self.zone_type in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-            return None
-
+        """Read this zone's node connectivity."""
         meta = self._resolve_connectivity_meta()
         if meta is None or meta.connectivity_offset is None:
             return None
@@ -1494,6 +1514,102 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
         return TecplotPltAuxDataReader(self._meta.auxdata)
 
 
+class TecplotPltPolyZoneReader(TecplotPolyZoneReader):
+    """Poly (FEPOLYGON / FEPOLYHEDRON) zone reader for PLT files.
+
+    Metadata comes from the pre-parsed :class:`_ZoneMeta`. Each face-map array is read
+    from disk on first access.
+    """
+
+    __slots__ = (
+        "_file_path",
+        "_meta",
+        "_num_vars",
+        "_var_names",
+        "_byte_order",
+        "_all_metas",
+    )
+    _file_path: str | os.PathLike
+    _meta: _ZoneMeta
+    _num_vars: int
+    _var_names: list[str]
+    _byte_order: str
+    _all_metas: list[_ZoneMeta] | None
+
+    def __init__(
+        self,
+        file_path: str | os.PathLike,
+        meta: _ZoneMeta,
+        zone_index: int,
+        num_vars: int,
+        var_names: list[str],
+        byte_order: str,
+        all_metas: list[_ZoneMeta] | None = None,
+    ) -> None:
+        super().__init__(
+            zone_index=zone_index,
+            title=meta.title,
+            zone_type=meta.zone_type,
+            solution_time=meta.solution_time,
+            strand_id=max(meta.strand_id + 1, 0),
+            datapacking=DataPacking.BLOCK,
+            num_nodes=meta.num_nodes,
+            num_elements=meta.num_elements,
+            num_faces=meta.num_faces,
+            num_boundary_faces=meta.num_boundary_faces,
+            num_boundary_connections=meta.num_boundary_connections,
+            shared_connectivity=(
+                meta.connectivity_shared_zone
+                if meta.connectivity_shared_zone >= 0
+                else None
+            ),
+        )
+        object.__setattr__(self, "_file_path", file_path)
+        object.__setattr__(self, "_meta", meta)
+        object.__setattr__(self, "_num_vars", num_vars)
+        object.__setattr__(self, "_var_names", var_names)
+        object.__setattr__(self, "_byte_order", byte_order)
+        object.__setattr__(self, "_all_metas", all_metas)
+
+    def _load_variables(self) -> list[TecplotVariableReader]:
+        return _load_plt_variables(
+            self._file_path,
+            self._meta,
+            self.zone_index,
+            self._num_vars,
+            self._var_names,
+            self._byte_order,
+            self._all_metas,
+        )
+
+    def _read_section(self, meta: _ZoneMeta, key: str) -> npt.NDArray[np.int64]:
+        """Read one recorded face-map block as int64."""
+        offset, count, itemsize = meta.poly_sections[key]
+        dt = np.dtype(f"{self._byte_order}i{itemsize}")
+        with open(self._file_path, "rb") as fp:
+            fp.seek(offset)
+            return np.fromfile(fp, dtype=dt, count=count).astype(np.int64)
+
+    def _load_array(self, key: PolyArrayKey) -> npt.NDArray[np.int64]:
+        meta = _resolve_connectivity_meta(self._meta, self._all_metas)
+        if meta is None or not meta.poly_sections:
+            raise PltReadError(
+                f"Zone {self.zone_index}: shared connectivity could not be resolved."
+            )
+        if key == "face_node_counts":
+            if "face_node_counts" in meta.poly_sections:  # pragma: no cover
+                return self._read_section(meta, "face_node_counts")
+            return np.diff(self._read_section(meta, "face_node_offsets"))
+        if key == "boundary_connection_counts":
+            return np.diff(self._read_section(meta, "boundary_offsets"))[1:]
+        # The remaining arrays are stored 0-based, with -1 for "none" and -(b + 2)
+        # for boundary face b, matching the public convention directly.
+        return self._read_section(meta, key)
+
+    def _load_auxdata(self) -> TecplotAuxDataReader:
+        return TecplotPltAuxDataReader(self._meta.auxdata)
+
+
 def _build_plt_zone(
     file_path: str | os.PathLike,
     meta: _ZoneMeta,
@@ -1506,6 +1622,10 @@ def _build_plt_zone(
     """Construct the right concrete zone reader for one parsed zone."""
     if meta.zone_type == ZoneType.ORDERED:
         return TecplotPltOrderedZoneReader(
+            file_path, meta, zone_index, num_vars, var_names, byte_order, all_metas
+        )
+    if meta.zone_type in _POLY_TYPES:
+        return TecplotPltPolyZoneReader(
             file_path, meta, zone_index, num_vars, var_names, byte_order, all_metas
         )
     return TecplotPltFEZoneReader(

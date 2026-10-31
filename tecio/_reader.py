@@ -2,8 +2,9 @@
 
 Every format's reader (SZL, PLT, DAT) exposes the same interface: :class:`TecplotReader`
 (the open file/dataset), :class:`TecplotZoneReader` (one zone, split into
-:class:`TecplotOrderedZoneReader` and :class:`TecplotFEZoneReader` since the two
-topologies don't share properties like dimensions or connectivity),
+:class:`TecplotOrderedZoneReader`, :class:`TecplotFEZoneReader`, and
+:class:`TecplotPolyZoneReader` since the topologies don't share properties like
+dimensions or connectivity),
 :class:`TecplotVariableReader` (one variable within a zone, not split by value location
 or zone topology, neither changes which properties exist, only the shape
 ``get_values()`` returns, which the method already computes from
@@ -40,9 +41,10 @@ Design notes:
 
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import ItemsView, Iterator, KeysView, Mapping, ValuesView
-from typing import Any, overload
+from typing import Any, Final, Literal, TypeAlias, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -56,6 +58,7 @@ from ._constants import (
     ZoneType,
 )
 from ._containers import VariableList, ZoneList, select_variable_arrays
+from ._utils import public_dir
 
 # Nodes per element for the standard finite-element zone types. ORDERED zones are
 # computed from active dimensions instead, see TecplotZoneReader.nodes_per_cell.
@@ -458,6 +461,10 @@ class TecplotZoneReader(ABC):
     __setattr__ = _immutable_setattr
     __delattr__ = _immutable_delattr
 
+    def __dir__(self) -> list[str]:  # pragma: no cover
+        """List only the public attributes and methods."""
+        return public_dir(self)
+
     def __repr__(self) -> str:  # pragma: no cover
         title = self.title
         if len(title) > 30:
@@ -664,17 +671,8 @@ class TecplotOrderedZoneReader(TecplotZoneReader):
 class TecplotFEZoneReader(TecplotZoneReader):
     """Read-only handle to one finite-element zone.
 
-    Covers every non-ORDERED zone type, including FEPOLYGON, FEPOLYHEDRON, and FEMIXED:
-    :attr:`num_nodes`/:attr:`num_elements`/:attr:`variable`/ :attr:`auxdata` are
-    meaningful for all of them today. :attr:`nodes_per_cell` only has a fixed answer for
-    the classic types (FELINESEG through FEBRICK) and raises for the rest, and
-    :attr:`node_map` may legitimately be None for a zone type whose connectivity a
-    format can't yet resolve (e.g. PLT's FEPOLYGON/FEPOLYHEDRON, face-map reading isn't
-    implemented there), the same contract this class already had before the Ordered/FE
-    split. A dedicated poly reader with real face-map support (a `facemap` property,
-    variable-length per-face connectivity) is a reasonable future split once some format
-    actually implements it, informed by a real implementation rather than a guess, not
-    before.
+    Covers the classic element zone types (FELINESEG through FEBRICK). Face-based
+    FEPOLYGON and FEPOLYHEDRON zones are read by :class:`TecplotPolyZoneReader`.
 
     Args:
         zone_index: 0-based zone index within the dataset.
@@ -779,10 +777,8 @@ class TecplotFEZoneReader(TecplotZoneReader):
     def node_map(self) -> npt.NDArray[np.int64] | None:
         """Node connectivity array ``(num_elements, nodes_per_cell)``.
 
-        None only if a format cannot yet resolve connectivity for this zone's type
-        (e.g. PLT's FEPOLYGON/FEPOLYHEDRON, face-map reading not yet implemented there;
-        such zones would need a future, dedicated poly reader, not this class, once
-        that's built).
+        None only if a format cannot resolve connectivity for this zone, e.g. when a
+        shared-connectivity source zone is missing.
         """
         if not self._node_map_loaded:
             node_map = self._load_node_map()
@@ -938,6 +934,274 @@ class TecplotFEZoneReader(TecplotZoneReader):
             f"{type(self).__name__} reports face-neighbor metadata but "
             "does not implement _load_face_connections."
         )
+
+
+# ======================================================================================
+# TecplotPolyZoneReader
+# ======================================================================================
+
+PolyArrayKey: TypeAlias = Literal[
+    "face_node_counts",
+    "face_nodes",
+    "face_left_elements",
+    "face_right_elements",
+    "boundary_connection_counts",
+    "boundary_connection_elements",
+    "boundary_connection_zones",
+]
+
+# Reference value for "no element" in ``face_left_elements`` and
+# ``face_right_elements``. Values at or below ``BOUNDARY_REF_BASE`` reference boundary
+# face ``BOUNDARY_REF_BASE - value``.
+NO_ELEMENT: Final = -1
+BOUNDARY_REF_BASE: Final = -2
+
+
+def counts_to_offsets(counts: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
+    """Return the ``len(counts) + 1`` running offsets for per-item *counts*."""
+    offsets = np.zeros(counts.size + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
+    return offsets
+
+
+class TecplotPolyZoneReader(TecplotZoneReader):
+    """Read-only handle to one FEPOLYGON or FEPOLYHEDRON (face-based) zone.
+
+    A poly zone stores faces instead of per-element node lists. Every face lists its
+    nodes and the elements on its left and right. All indices are 0-based. The face
+    arrays are flat and are returned as stored in the file, never split per element.
+
+    ``face_left_elements`` and ``face_right_elements`` hold, for each face:
+
+    * ``>= 0``: the 0-based element index.
+    * ``-1`` (:data:`NO_ELEMENT`): no element on that side (a domain boundary).
+    * ``<= -2``: a boundary face, an entry in the boundary connection arrays, used
+      for neighbors in other zones or faces with several neighbors. The boundary
+      face index is ``-2 - value`` (:data:`BOUNDARY_REF_BASE`).
+
+    Boundary face ``b`` owns ``boundary_connection_counts[b]`` consecutive entries of
+    ``boundary_connection_elements`` and ``boundary_connection_zones``, which hold the
+    0-based neighbor element and the 0-based zone containing it.
+
+    Face-neighbor connections (:class:`~tecio.FaceNeighborMode`) do not apply to poly
+    zones, the left and right elements play that role.
+
+    For a FEPOLYGON zone each face is an edge with exactly 2 nodes. Its
+    ``face_node_counts`` is synthesized (all 2) and ``face_nodes`` has
+    ``2 * num_faces`` entries.
+
+    Args:
+        zone_index: 0-based zone index within the dataset.
+        title: Zone title.
+        zone_type: FEPOLYGON or FEPOLYHEDRON.
+        solution_time: Solution time, 0.0 for static data.
+        strand_id: Strand ID, 0 for static data.
+        datapacking: On-disk value layout.
+        num_nodes: Number of nodes/points.
+        num_elements: Number of elements/cells.
+        num_faces: Number of faces.
+        num_boundary_faces: Number of boundary faces.
+        num_boundary_connections: Total number of boundary connections.
+        shared_connectivity: 0-based source zone index if this zone's connectivity
+            is shared, else None.
+    """
+
+    __slots__ = (
+        "_num_nodes",
+        "_num_elements",
+        "_num_faces",
+        "_num_boundary_faces",
+        "_num_boundary_connections",
+        "_shared_connectivity",
+        "_array_cache",
+    )
+    _num_nodes: int
+    _num_elements: int
+    _num_faces: int
+    _num_boundary_faces: int
+    _num_boundary_connections: int
+    _shared_connectivity: int | None
+    _array_cache: dict[str, npt.NDArray[np.int64]]
+
+    def __init__(
+        self,
+        zone_index: int,
+        title: str,
+        zone_type: ZoneType,
+        solution_time: float,
+        strand_id: int,
+        datapacking: DataPacking,
+        num_nodes: int,
+        num_elements: int,
+        num_faces: int,
+        num_boundary_faces: int,
+        num_boundary_connections: int,
+        shared_connectivity: int | None,
+    ) -> None:
+        if zone_type not in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
+            raise ValueError(f"Not a poly zone type: {zone_type!r}")
+        super().__init__(
+            zone_index=zone_index,
+            title=title,
+            zone_type=zone_type,
+            solution_time=solution_time,
+            strand_id=strand_id,
+            datapacking=datapacking,
+        )
+        object.__setattr__(self, "_num_nodes", num_nodes)
+        object.__setattr__(self, "_num_elements", num_elements)
+        object.__setattr__(self, "_num_faces", num_faces)
+        object.__setattr__(self, "_num_boundary_faces", num_boundary_faces)
+        object.__setattr__(self, "_num_boundary_connections", num_boundary_connections)
+        object.__setattr__(self, "_shared_connectivity", shared_connectivity)
+        object.__setattr__(self, "_array_cache", {})
+
+    def _repr_size(self) -> str:
+        return f"N={self._num_nodes}, F={self._num_faces}, E={self._num_elements}"
+
+    @property
+    def num_nodes(self) -> int:
+        """Number of nodes/points."""
+        return self._num_nodes
+
+    @property
+    def num_elements(self) -> int:
+        """Number of elements/cells."""
+        return self._num_elements
+
+    @property
+    def num_faces(self) -> int:
+        """Number of faces."""
+        return self._num_faces
+
+    @property
+    def num_boundary_faces(self) -> int:
+        """Number of boundary faces."""
+        return self._num_boundary_faces
+
+    @property
+    def num_boundary_connections(self) -> int:
+        """Total number of boundary connections over all boundary faces."""
+        return self._num_boundary_connections
+
+    @property
+    def shared_connectivity(self) -> int | None:
+        """0-based source zone index if connectivity is shared, else None."""
+        return self._shared_connectivity
+
+    def _face_map_digest(self) -> str:
+        """Return a hash identifying this zone's grid, for matching grids across zones.
+
+        The face map is read without filling the array cache, so scanning many zones
+        does not keep their arrays in memory.
+        """
+        h = hashlib.blake2b(digest_size=16)
+        h.update(
+            f"{self.zone_type.name}:{self._num_nodes}:{self._num_elements}:"
+            f"{self._num_faces}".encode()
+        )
+        keys: tuple[PolyArrayKey, ...] = (
+            "face_nodes",
+            "face_left_elements",
+            "face_right_elements",
+        )
+        if self.zone_type is ZoneType.FEPOLYHEDRON:
+            keys = ("face_node_counts", *keys)
+        for key in keys:
+            arr = np.ascontiguousarray(self._load_array(key))
+            h.update(arr.data)
+        return h.hexdigest()
+
+    # -- Lazy face-map arrays ----------------------------------------------------------
+
+    def _array(self, key: PolyArrayKey) -> npt.NDArray[np.int64]:
+        """Return the cached array for *key*, loading it on first use."""
+        cache = self._array_cache
+        arr = cache.get(key)
+        if arr is None:
+            arr = self._load_array(key)
+            cache[key] = arr
+        return arr
+
+    @abstractmethod
+    def _load_array(self, key: PolyArrayKey) -> npt.NDArray[np.int64]:
+        """Read one face-map array, 0-based, as int64. Called at most once per key.
+
+        Never called for ``face_node_counts`` of a FEPOLYGON zone, which is
+        synthesized by the base class.
+        """
+
+    @property
+    def face_node_counts(self) -> npt.NDArray[np.int64]:
+        """Number of nodes of each face, shape ``(num_faces,)``."""
+        if self.zone_type is ZoneType.FEPOLYGON:
+            cache = self._array_cache
+            arr = cache.get("face_node_counts")
+            if arr is None:
+                arr = np.full(self._num_faces, 2, dtype=np.int64)
+                cache["face_node_counts"] = arr
+            return arr
+        return self._array("face_node_counts")
+
+    @property
+    def face_node_offsets(self) -> npt.NDArray[np.int64]:
+        """Running offsets into :attr:`face_nodes`, shape ``(num_faces + 1,)``.
+
+        The nodes of face ``f`` are ``face_nodes[offsets[f]:offsets[f + 1]]``.
+        """
+        arr = self._array_cache.get("face_node_offsets")
+        if arr is None:
+            arr = counts_to_offsets(self.face_node_counts)
+            self._array_cache["face_node_offsets"] = arr
+        return arr
+
+    @property
+    def face_nodes(self) -> npt.NDArray[np.int64]:
+        """Flat 0-based node indices of all faces, in face order."""
+        return self._array("face_nodes")
+
+    @property
+    def face_left_elements(self) -> npt.NDArray[np.int64]:
+        """Element on the left of each face, shape ``(num_faces,)``, see class doc."""
+        return self._array("face_left_elements")
+
+    @property
+    def face_right_elements(self) -> npt.NDArray[np.int64]:
+        """Element on the right of each face, shape ``(num_faces,)``, see class doc."""
+        return self._array("face_right_elements")
+
+    @property
+    def boundary_connection_counts(self) -> npt.NDArray[np.int64]:
+        """Connections of each boundary face, shape ``(num_boundary_faces,)``."""
+        if self._num_boundary_faces == 0:
+            return np.zeros(0, dtype=np.int64)
+        return self._array("boundary_connection_counts")
+
+    @property
+    def boundary_connection_offsets(self) -> npt.NDArray[np.int64]:
+        """Running offsets into the boundary connection arrays.
+
+        Shape ``(num_boundary_faces + 1,)``.
+        """
+        arr = self._array_cache.get("boundary_connection_offsets")
+        if arr is None:
+            arr = counts_to_offsets(self.boundary_connection_counts)
+            self._array_cache["boundary_connection_offsets"] = arr
+        return arr
+
+    @property
+    def boundary_connection_elements(self) -> npt.NDArray[np.int64]:
+        """0-based neighbor element of every boundary connection, flat."""
+        if self._num_boundary_connections == 0:
+            return np.zeros(0, dtype=np.int64)
+        return self._array("boundary_connection_elements")
+
+    @property
+    def boundary_connection_zones(self) -> npt.NDArray[np.int64]:
+        """0-based zone of the neighbor of every boundary connection, flat."""
+        if self._num_boundary_connections == 0:
+            return np.zeros(0, dtype=np.int64)
+        return self._array("boundary_connection_zones")
 
 
 # ======================================================================================

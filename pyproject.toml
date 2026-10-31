@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tecio-python"
 version = "0.4.0"
+license = "Apache-2.0"
 description = "Python interface for reading and writing Tecplot data files"
 
 readme = "README.md"
@@ -25,7 +26,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",    
 ]
 
@@ -52,8 +52,8 @@ tecstats = "tecio.cli.tecstats:main"
 dev = [
     "build",
     "twine",
-    "ruff",
-    "ty",
+    "ruff>=0.17.3",
+    "ty>=0.0.95",
     "pytest",
     "pytest-cov",
 ]
@@ -64,14 +64,27 @@ docs = [
     "myst-parser>=3.0",
 ]
 mat = ["scipy"]
+all = [
+   "build",
+    "twine",
+    "ruff",
+    "ty",
+    "pytest",
+    "pytest-cov",
+    "sphinx>=7.0",
+    "sphinx-book-theme>=1.1",
+    "sphinx-autodoc-typehints>=2.0",
+    "myst-parser>=3.0",
+    "scipy",
+]
 
 [tool.setuptools.packages.find]
 include = ["tecio*"]
 exclude = ["archive*", "test*"]
 
 [tool.setuptools.data-files]
-"share/plugins/paraview" = ["plugins/paraview/*"]
-"share/plugins/matlab" = ["plugins/matlab/*"]
+"share/tecio/plugins/paraview" = ["plugins/paraview/*"]
+"share/tecio/plugins/matlab" = ["plugins/matlab/*"]
 
 [tool.ruff]
 line-length = 88

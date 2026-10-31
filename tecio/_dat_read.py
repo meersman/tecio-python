@@ -31,9 +31,11 @@ from ._constants import (
 )
 from ._containers import ZoneList
 from ._reader import (
+    PolyArrayKey,
     TecplotAuxDataReader,
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotVariableReader,
     TecplotZoneReader,
@@ -776,6 +778,19 @@ class _LineBuffer:
         self._peeked_pos = -1
         return value
 
+    def skip_blank(self) -> None:
+        """Advance past blank and comment-only lines.
+
+        The vectorized integer readers parse raw lines, so a ``# face nodes`` style
+        section comment must be skipped before them or they fall back to the slow path.
+        """
+        self._peeked = None
+        self._peeked_pos = -1
+        pos, n = self._pos, len(self._lines)
+        while pos < n and not _strip_comment(self._lines[pos]).strip():
+            pos += 1
+        self._pos = pos
+
     def take_raw(self, count: int) -> list[str]:
         """Consume and return up to *count* **unprocessed** source lines.
 
@@ -1025,10 +1040,7 @@ class TecplotDatFEZoneReader(TecplotFEZoneReader):
     DAT has no concept of a disabled zone, so the base class default (always True)
     applies.
 
-    FEPOLYGON/FEPOLYHEDRON are not constructed as this class, or at all, the parser
-    rejects them with :exc:`ValueError` before reaching here (see ``_parse_zone``), so
-    unlike PLT there's no partial-metadata-only case to handle for those types in the
-    ASCII reader.
+    FEPOLYGON/FEPOLYHEDRON zones are read as :class:`TecplotDatPolyZoneReader`.
     """
 
     __slots__ = (
@@ -1106,6 +1118,65 @@ class TecplotDatFEZoneReader(TecplotFEZoneReader):
     def _load_face_connections(self) -> npt.NDArray[np.int64]:
         assert self._face_connections is not None  # narrowed: meta already confirmed
         return self._face_connections
+
+    def _load_auxdata(self) -> TecplotAuxDataReader:
+        return TecplotDatAuxDataReader(self._aux_raw)
+
+
+class TecplotDatPolyZoneReader(TecplotPolyZoneReader):
+    """Poly (FEPOLYGON / FEPOLYHEDRON) zone reader for ASCII DAT files.
+
+    Like :class:`TecplotDatFEZoneReader`, the whole zone is already parsed and held in
+    memory at construction, so the lazy hooks just hand back stored arrays. The face
+    map is already converted to the public 0-based convention.
+    """
+
+    __slots__ = ("_variables", "_aux_raw", "_face_map")
+    _variables: list[TecplotVariableReader]
+    _aux_raw: dict[str, str]
+    _face_map: dict[str, npt.NDArray[np.int64]]
+
+    def __init__(
+        self,
+        zone_index: int,
+        title: str,
+        zone_type: ZoneType,
+        num_nodes: int,
+        num_elements: int,
+        num_faces: int,
+        num_boundary_faces: int,
+        num_boundary_connections: int,
+        solution_time: float,
+        strand_id: int,
+        variables: list[TecplotVariableReader],
+        auxdata: dict[str, str],
+        face_map: dict[str, npt.NDArray[np.int64]],
+        datapacking: DataPacking = DataPacking.BLOCK,
+        shared_connectivity: int | None = None,
+    ) -> None:
+        super().__init__(
+            zone_index=zone_index,
+            title=title,
+            zone_type=zone_type,
+            solution_time=solution_time,
+            strand_id=strand_id,
+            datapacking=datapacking,
+            num_nodes=num_nodes,
+            num_elements=num_elements,
+            num_faces=num_faces,
+            num_boundary_faces=num_boundary_faces,
+            num_boundary_connections=num_boundary_connections,
+            shared_connectivity=shared_connectivity,
+        )
+        object.__setattr__(self, "_variables", variables)
+        object.__setattr__(self, "_aux_raw", auxdata)
+        object.__setattr__(self, "_face_map", face_map)
+
+    def _load_variables(self) -> list[TecplotVariableReader]:
+        return self._variables
+
+    def _load_array(self, key: PolyArrayKey) -> npt.NDArray[np.int64]:
+        return self._face_map[key]
 
     def _load_auxdata(self) -> TecplotAuxDataReader:
         return TecplotDatAuxDataReader(self._aux_raw)
@@ -1256,15 +1327,29 @@ def _peek_dat_metadata(path: str | os.PathLike) -> _DatMetadata:
                 num_nodes = zi * zj * zk
                 num_elements = max(zi - 1, 1) * max(zj - 1, 1) * max(zk - 1, 1)
         else:
-            # FE zones (including FEPOLYGON/FEPOLYHEDRON, which the full parser can't
-            # read data for, but whose header is just as legible as any other zone's)
-            # always state counts directly.
+            # FE and poly zones always state counts directly.
             num_nodes = int(kv.get("NODES", kv.get("N", "0")) or "0")
             num_elements = int(kv.get("ELEMENTS", kv.get("E", "0")) or "0")
 
         zones.append(_DatZoneInfo(zone_title, zone_type, num_nodes, num_elements))
 
     return _DatMetadata(title, file_type, variable_names, zones)
+
+
+def _face_map_of(zone: TecplotPolyZoneReader) -> dict[str, npt.NDArray[np.int64]]:
+    """Return the face-map arrays of an already parsed poly zone."""
+    face_map = {
+        "face_nodes": zone.face_nodes,
+        "face_left_elements": zone.face_left_elements,
+        "face_right_elements": zone.face_right_elements,
+    }
+    if zone.zone_type is ZoneType.FEPOLYHEDRON:
+        face_map["face_node_counts"] = zone.face_node_counts
+    if zone.num_boundary_faces:
+        face_map["boundary_connection_counts"] = zone.boundary_connection_counts
+        face_map["boundary_connection_elements"] = zone.boundary_connection_elements
+        face_map["boundary_connection_zones"] = zone.boundary_connection_zones
+    return face_map
 
 
 class TecplotDatReader(TecplotReader):
@@ -1559,12 +1644,6 @@ class TecplotDatReader(TecplotReader):
 
         zone_type = _determine_zone_type(kv)
 
-        if zone_type in _FE_POLY:
-            raise ValueError(
-                f"Zone type {zone_type.name!r} is not yet supported by the "
-                "ASCII reader."
-            )
-
         # Passive/shared variables are parsed here (ahead of var_locs/var_types below,
         # which don't need this ordering) because the point-count inference just below
         # needs active_count first.
@@ -1595,6 +1674,12 @@ class TecplotDatReader(TecplotReader):
             num_nodes = int(kv.get("NODES", kv.get("N", "0")) or "0")
             num_cells = int(kv.get("ELEMENTS", kv.get("E", "0")) or "0")
             I, J, K = num_nodes, num_cells, 0  # noqa E741
+        num_faces = int(kv.get("FACES", "0") or "0")
+        total_face_nodes = int(kv.get("TOTALNUMFACENODES", "0") or "0")
+        num_boundary_faces = int(kv.get("NUMCONNECTEDBOUNDARYFACES", "0") or "0")
+        num_boundary_connections = int(
+            kv.get("TOTALNUMBOUNDARYCONNECTIONS", "0") or "0"
+        )
 
         # Packing: DATAPACKING wins, then legacy F, else BLOCK (Tecplot default).
         if "DATAPACKING" in kv:
@@ -1609,6 +1694,12 @@ class TecplotDatReader(TecplotReader):
             packing = legacy_packing
         else:
             packing = DataPacking.BLOCK
+
+        # Tecplot refuses POINT for face-based zones, so match it.
+        if zone_type in _FE_POLY and packing != DataPacking.BLOCK:
+            raise ValueError(
+                "Polygon and polyhedron zones must use BLOCK data packing."
+            )
 
         # Face-neighbor connections (finite-element zones only; ordered zones
         # don't need them, adjacency is already implicit in the I/J/K
@@ -1685,8 +1776,26 @@ class TecplotDatReader(TecplotReader):
         # -- Read connectivity (FE zones only) -----------------------------------------
 
         node_map: npt.NDArray | None = None
+        face_map: dict[str, npt.NDArray[np.int64]] = {}
 
-        if zone_type != ZoneType.ORDERED:
+        if zone_type in _FE_POLY:
+            if con_share_zone and self._zones:
+                source_zone = self._zones[con_share_zone - 1]
+                if isinstance(source_zone, TecplotPolyZoneReader):
+                    face_map = _face_map_of(source_zone)
+                    num_faces = source_zone.num_faces
+                    num_boundary_faces = source_zone.num_boundary_faces
+                    num_boundary_connections = source_zone.num_boundary_connections
+            else:
+                face_map = self._read_poly_face_map(
+                    tokens,
+                    zone_type,
+                    num_faces,
+                    total_face_nodes,
+                    num_boundary_faces,
+                    num_boundary_connections,
+                )
+        elif zone_type != ZoneType.ORDERED:
             if con_share_zone and self._zones:
                 source_zone = self._zones[con_share_zone - 1]
                 if isinstance(source_zone, TecplotFEZoneReader):
@@ -1787,6 +1896,30 @@ class TecplotDatReader(TecplotReader):
             for idx, name in enumerate(self._variable_names)
         ]
 
+        if zone_type in _FE_POLY:
+            self._zones.append(
+                TecplotDatPolyZoneReader(
+                    zone_index=zone_index,
+                    title=zone_title,
+                    zone_type=zone_type,
+                    num_nodes=num_nodes,
+                    num_elements=num_cells,
+                    num_faces=num_faces,
+                    num_boundary_faces=num_boundary_faces,
+                    num_boundary_connections=num_boundary_connections,
+                    solution_time=solution_time,
+                    strand_id=strand_id,
+                    variables=read_vars,
+                    auxdata=zone_aux,
+                    face_map=face_map,
+                    datapacking=packing,
+                    shared_connectivity=(con_share_zone - 1)
+                    if con_share_zone
+                    else None,
+                )
+            )
+            return
+
         self._zones.append(
             self._build_zone(
                 zone_index=zone_index,
@@ -1861,6 +1994,61 @@ class TecplotDatReader(TecplotReader):
             face_connections=face_connections,
             face_neighbors_complete=face_neighbors_complete,
         )
+
+    @staticmethod
+    def _read_poly_face_map(
+        tokens: _LineBuffer,
+        zone_type: ZoneType,
+        num_faces: int,
+        total_face_nodes: int,
+        num_boundary_faces: int,
+        num_boundary_connections: int,
+    ) -> dict[str, npt.NDArray[np.int64]]:
+        """Read the integer face-map sections that follow a poly zone's variables.
+
+        The sections are introduced by ``#`` comments, which are skipped. All indices
+        are 1-based in ASCII (0 for no element, ``-k`` for the k-th boundary face), so
+        every array is shifted down by one to the public convention.
+
+        Raises:
+            ValueError: If a section is shorter than the header declares.
+        """
+
+        def section(name: str, count: int, shift: int = 0) -> npt.NDArray[np.int64]:
+            tokens.skip_blank()
+            arr = TecplotDatReader._read_int_block(tokens, count)
+            if arr.size != count:
+                raise ValueError(
+                    f"Poly zone section '{name}' has {arr.size} values, expected "
+                    f"{count}."
+                )
+            return arr - shift if shift else arr
+
+        face_map: dict[str, npt.NDArray[np.int64]] = {}
+        if zone_type is ZoneType.FEPOLYHEDRON:
+            counts = section("node count per face", num_faces)
+            if int(counts.sum()) != total_face_nodes:
+                raise ValueError(
+                    f"Poly zone node counts sum to {int(counts.sum())}, but "
+                    f"TotalNumFaceNodes is {total_face_nodes}."
+                )
+            face_map["face_node_counts"] = counts
+            face_map["face_nodes"] = section("face nodes", total_face_nodes, 1)
+        else:
+            face_map["face_nodes"] = section("face nodes", 2 * num_faces, 1)
+        face_map["face_left_elements"] = section("left elements", num_faces, 1)
+        face_map["face_right_elements"] = section("right elements", num_faces, 1)
+        if num_boundary_faces:
+            face_map["boundary_connection_counts"] = section(
+                "boundary connection counts", num_boundary_faces
+            )
+            face_map["boundary_connection_elements"] = section(
+                "boundary connection elements", num_boundary_connections, 1
+            )
+            face_map["boundary_connection_zones"] = section(
+                "boundary connection zones", num_boundary_connections, 1
+            )
+        return face_map
 
     # -- Block readers -----------------------------------------------------------------
 

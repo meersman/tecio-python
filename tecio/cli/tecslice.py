@@ -74,7 +74,10 @@ window is filtered.
     ``-t [start]:[end]:[skip]``
         Slice solution times. ``start`` and ``end`` are float time values (inclusive);
         ``skip`` is an integer stride applied after the time window is
-        filtered. Strand-0 zones are always written unchanged.
+        filtered. Strand-0 zones are always written as is. A dropped zone that a kept
+        zone shares variables or connectivity with, or is connected to through boundary
+        faces, is still written, as a strand-0 anchor that retains only the variables
+        shared from it.
 
     ``--strand-id INT``
         Restrict time slicing to a single strand ID. Defaults to all strands with ID
@@ -124,7 +127,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -133,6 +136,7 @@ import numpy as np
 from .. import (
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotSzlWriter,
     TecplotVariableReader,
     TecplotWriter,
@@ -141,6 +145,7 @@ from .. import (
     ZoneType,
 )
 from .. import open as tecio_open
+from .._writer import poly_face_kwargs
 
 # ---------------------------------------------------------------------------
 # Slice spec types
@@ -516,41 +521,68 @@ def _build_time_filter(
 # ---------------------------------------------------------------------------
 
 
+def _zone_sources(zone: TecplotZoneReader) -> dict[int, set[str]]:
+    """Map each zone that *zone* depends on to the variables it shares from it.
+
+    Connectivity sharing and boundary connections also make a zone depend on another
+    one, with no variables in the set.
+    """
+    sources: dict[int, set[str]] = {}
+    for var in zone.variables:
+        sv = var.shared_zone  # 0-based, or None
+        if sv is not None:
+            sources.setdefault(sv, set()).add(var.name)
+    if (
+        isinstance(zone, (TecplotFEZoneReader, TecplotPolyZoneReader))
+        and zone.shared_connectivity is not None
+    ):
+        sources.setdefault(zone.shared_connectivity, set())
+    if isinstance(zone, TecplotPolyZoneReader) and zone.num_boundary_faces:
+        for z in np.unique(zone.boundary_connection_zones):
+            sources.setdefault(int(z), set())
+    return sources
+
+
 def _build_protected_set(
     zones: list[TecplotZoneReader],
     keep_indices: set[int],
-) -> set[int]:
-    """Return 0-based zone indices that must be written as protected zones.
+) -> dict[int, set[str]]:
+    """Return the zones that must be written as protected zones.
 
-    A zone is "protected" if it is excluded by the time filter but is
-    referenced as a variable-sharing source by at least one zone that will
-    be written. Protected zones are written with all non-shared variables
-    set passive and their strand ID forced to 0 so they act as inert grid
-    anchors without contributing to the time series.
+    A zone is "protected" if it is excluded by the time filter but a zone that will
+    be written shares variables or connectivity with it, or is connected to it
+    through boundary faces. Protected zones keep only the variables that other zones
+    share from them, every other variable is set passive, and their strand ID is
+    forced to 0 so they act as inert grid anchors without contributing to the time
+    series. A protected zone can need sources of its own, so the search repeats until
+    no new zone is found.
 
     Args:
         zones:        All source zone reader objects.
         keep_indices: 0-based zone indices selected by the time filter.
 
     Returns:
-        Set of 0-based zone indices to write as protected zones.
+        Protected 0-based zone index mapped to the names of the variables that stay
+        active in it, which can be empty.
 
     """
-    # Collect every sharing source referenced by a kept zone.
-    required_sources: set[int] = set()
-    for zi in keep_indices:
-        for var in zones[zi].variables:
-            sv = var.shared_zone  # 0-based, or None
-            if sv is not None:
-                required_sources.add(sv)
-
-    # A zone needs protection only if it is required but not already kept.
-    return required_sources - keep_indices
+    protected: dict[int, set[str]] = {}
+    pending = list(keep_indices)
+    while pending:
+        for source, names in _zone_sources(zones[pending.pop()]).items():
+            if source in keep_indices:
+                continue
+            if source not in protected:
+                protected[source] = set()
+                pending.append(source)
+            protected[source] |= names
+    return protected
 
 
 def _collect_zone_arrays(
     zone: TecplotZoneReader,
     num_vars: int,
+    zone_map: Mapping[int, int],
 ) -> tuple[
     list[TecplotVariableReader],
     list[np.ndarray],
@@ -560,12 +592,13 @@ def _collect_zone_arrays(
 ]:
     """Read active variable arrays/metadata from *zone*, and passive/sharing sets.
 
-    Sharing references are passed through verbatim as 0-based zone indices.  Zone
-    numbering is preserved in the output (every zone is written in source order).
+    Sharing references are renumbered with *zone_map*, which holds the output index of
+    every source zone written so far.
 
     Args:
         zone:     Source zone reader.
         num_vars: Number of variables in the dataset.
+        zone_map: Source zone index to output zone index.
 
     Returns:
         ``(active_vars, data, locs, passive_vars, var_sharing)``: the first three cover
@@ -588,7 +621,7 @@ def _collect_zone_arrays(
             passive_vars.add(var.name)
             continue
         if sv is not None:
-            var_sharing[var.name] = sv
+            var_sharing[var.name] = zone_map[sv]
             continue
 
         arr = var.values
@@ -607,10 +640,11 @@ def _write_zone_verbatim(
     writer: TecplotWriter,
     zone: TecplotZoneReader,
     num_vars: int,
+    zone_map: Mapping[int, int],
 ) -> None:
-    """Copy a zone to *writer* without modification."""
+    """Copy a zone to *writer* without modification, renumbering shared zones."""
     _active_vars, data, locs, passive_vars, var_sharing = _collect_zone_arrays(
-        zone, num_vars
+        zone, num_vars, zone_map
     )
 
     zone_aux: dict[str, str] | None = (
@@ -629,6 +663,15 @@ def _write_zone_verbatim(
 
     if isinstance(zone, TecplotOrderedZoneReader):
         writer.write_ordered_zone(data=data, **kw)
+    elif isinstance(zone, TecplotPolyZoneReader):
+        con_sharing = zone.shared_connectivity
+        writer.write_poly_zone(
+            zone_type=zone.zone_type,
+            data=data,
+            con_sharing=zone_map[con_sharing] if con_sharing is not None else None,
+            **(poly_face_kwargs(zone, zone_map) if con_sharing is None else {}),
+            **kw,
+        )
     elif isinstance(zone, TecplotFEZoneReader):
         con_sharing = zone.shared_connectivity
         fe_kw = kw.copy()
@@ -643,12 +686,12 @@ def _write_zone_verbatim(
             zone_type=zone.zone_type,
             data=data,
             node_map=None if con_sharing is not None else zone.node_map,
-            con_sharing=con_sharing,
+            con_sharing=zone_map[con_sharing] if con_sharing is not None else None,
             **fe_kw,
         )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered nor a classic FE "
+            f"Zone '{zone.title}' is neither an ordered, classic FE nor poly "
             "zone; writing is not supported for it."
         )
 
@@ -657,31 +700,41 @@ def _write_zone_protected(
     writer: TecplotWriter,
     zone: TecplotZoneReader,
     num_vars: int,
+    zone_map: Mapping[int, int],
+    keep_vars: set[str],
 ) -> None:
     """Write a zone as a protected grid anchor.
 
-    All variables that are not already passive or shared are set passive so
-    that no solution data is carried into the output. The strand ID is
-    forced to 0 so the zone is treated as stationary and does not appear in
-    any time-series animation. Sharing references are preserved verbatim so
-    that zones which share coordinates from this zone continue to work.
+    Only the variables in *keep_vars*, which other zones share from this one, keep
+    their data. Every other variable that is not already passive or shared is set
+    passive. If that leaves no data at all the first variable is kept, because a
+    zone with only passive variables is not written. The strand ID is forced to 0 so
+    the zone is treated as stationary and does not appear in any time-series
+    animation. Sharing references are kept, renumbered with *zone_map*, so that zones
+    which share from this zone continue to work.
 
     Args:
-        writer:   Open writer instance.
-        zone:     Source zone reader.
-        num_vars: Number of variables in the dataset.
+        writer:    Open writer instance.
+        zone:      Source zone reader.
+        num_vars:  Number of variables in the dataset.
+        zone_map:  Source zone index to output zone index.
+        keep_vars: Names of the variables that stay active.
 
     """
-    active_vars, _data, _locs, passive_vars, var_sharing = _collect_zone_arrays(
-        zone, num_vars
+    active_vars, data, locs, passive_vars, var_sharing = _collect_zone_arrays(
+        zone, num_vars, zone_map
     )
 
-    # Force every active (non-shared) variable to passive; no data to write.
-    passive_vars = passive_vars | {var.name for var in active_vars}
-
-    # No active non-shared data to pass to the writer.
+    if active_vars and not any(var.name in keep_vars for var in active_vars):
+        keep_vars = {active_vars[0].name}
     writer_data: list[np.ndarray] = []
     writer_locs: list[Any] = []
+    for var, arr, loc in zip(active_vars, data, locs, strict=True):
+        if var.name in keep_vars:
+            writer_data.append(arr)
+            writer_locs.append(loc)
+        else:
+            passive_vars.add(var.name)
 
     zone_aux: dict[str, str] | None = (
         dict(zone.auxdata.items()) if len(zone.auxdata) > 0 else None
@@ -699,6 +752,15 @@ def _write_zone_protected(
 
     if isinstance(zone, TecplotOrderedZoneReader):
         writer.write_ordered_zone(data=writer_data, **kw)
+    elif isinstance(zone, TecplotPolyZoneReader):
+        con_sharing = zone.shared_connectivity
+        writer.write_poly_zone(
+            zone_type=zone.zone_type,
+            data=writer_data,
+            con_sharing=con_sharing,
+            **({} if con_sharing is not None else poly_face_kwargs(zone)),
+            **kw,
+        )
     elif isinstance(zone, TecplotFEZoneReader):
         con_sharing = zone.shared_connectivity
         fe_kw = kw.copy()
@@ -718,7 +780,7 @@ def _write_zone_protected(
         )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered nor a classic FE "
+            f"Zone '{zone.title}' is neither an ordered, classic FE nor poly "
             "zone; writing is not supported for it."
         )
 
@@ -730,11 +792,11 @@ def _slice_and_write_ordered(
     sl_i: slice,
     sl_j: slice,
     sl_k: slice,
+    zone_map: Mapping[int, int],
 ) -> bool:
     """Apply IJK slices to an ordered zone and write it.
 
-    Sharing references are passed through verbatim (zone numbering is
-    preserved because every zone is written in source order).
+    Sharing references are renumbered with *zone_map*.
 
     Args:
         writer:   Open writer instance.
@@ -743,6 +805,7 @@ def _slice_and_write_ordered(
         sl_i:     Python slice for I axis.
         sl_j:     Python slice for J axis.
         sl_k:     Python slice for K axis.
+        zone_map: Source zone index to output zone index.
 
     Returns:
         ``True`` if the zone was written, ``False`` if the slice was empty.
@@ -759,7 +822,7 @@ def _slice_and_write_ordered(
         return False
 
     active_vars, data, locs, passive_vars, var_sharing = _collect_zone_arrays(
-        zone, num_vars
+        zone, num_vars, zone_map
     )
 
     sliced_data: list[np.ndarray] = []
@@ -947,19 +1010,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if auxvar:
                     writer.add_auxvar_dict(auxvar)
 
-                # Zones excluded by the time filter that are sharing sources
-                # for kept zones are written as "protected" anchors: all
-                # non-shared variables passive, strand ID forced to 0.
-                # Because every zone is written in source order (full, protected,
-                # or skipped), zone numbering is identical between source and
-                # output and sharing references need no remapping.
-                protected_indices: set[int] = (
-                    _build_protected_set(all_zones, keep_indices) if do_time else set()
+                # Zones excluded by the time filter that are sharing sources for kept
+                # zones are written as "protected" anchors: all non-shared variables
+                # passive, strand ID forced to 0.  Because zones are written in source
+                # order but skipped zones shift the numbering, shared references must go
+                # through ``zone_map``, which records the output index of every zone
+                # written so far.
+                zone_map: dict[int, int] = {}
+                protected_vars = (
+                    _build_protected_set(all_zones, keep_indices) if do_time else {}
                 )
-                if protected_indices:
+                if protected_vars:
                     print(
                         f"Protected (sharing sources): "
-                        f"{sorted(protected_indices)} "
+                        f"{sorted(protected_vars)} "
                         f"zone(s) written as passive grid anchors."
                     )
 
@@ -969,22 +1033,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for zi, zone in enumerate(all_zones):
                     zt = zone.zone_type
 
-                    if zt in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
-                        print(
-                            f"Warning: zone {zi} ('{zone.title}') is "
-                            f"{zt.name} -- skipping.",
-                            file=sys.stderr,
-                        )
-                        continue
+                    # A zone can be connected to itself, so its own output index is
+                    # in the map while it is written.
+                    zone_map[zi] = writer.current_zone + 1
 
-                    if zi in protected_indices:
-                        # Write as a passive grid anchor to preserve sharing.
-                        _write_zone_protected(writer, zone, num_vars)
+                    if zi in protected_vars:
+                        # Write as a grid anchor to preserve sharing.
+                        _write_zone_protected(
+                            writer, zone, num_vars, zone_map, protected_vars[zi]
+                        )
                         zones_written += 1
                         zones_protected += 1
                         continue
 
                     if zi not in keep_indices:
+                        del zone_map[zi]
                         continue
 
                     if do_ijk and isinstance(zone, TecplotOrderedZoneReader):
@@ -995,6 +1058,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             sl_i,
                             sl_j,
                             sl_k,
+                            zone_map,
                         )
                         if not written:
                             print(
@@ -1003,6 +1067,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 "skipping.",
                                 file=sys.stderr,
                             )
+                            del zone_map[zi]
                             continue
 
                     elif do_ijk and zt != ZoneType.ORDERED:
@@ -1012,10 +1077,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "written verbatim.",
                             file=sys.stderr,
                         )
-                        _write_zone_verbatim(writer, zone, num_vars)
+                        _write_zone_verbatim(writer, zone, num_vars, zone_map)
 
                     else:
-                        _write_zone_verbatim(writer, zone, num_vars)
+                        _write_zone_verbatim(writer, zone, num_vars, zone_map)
 
                     zones_written += 1
 

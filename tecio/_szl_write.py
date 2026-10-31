@@ -771,13 +771,14 @@ class TecplotSzlWriter(TecplotWriter):
 
         Raises:
             NotImplementedError:
-                For FEPOLYGON, FEPOLYHEDRON, or if *datapacking* is
-                :attr:`~tecio.libtecio.DataPacking.POINT`.
+                If *datapacking* is :attr:`~tecio.libtecio.DataPacking.POINT`.
             TypeError:
                 If *passive_vars*/*var_sharing* isn't a list/tuple/set/mapping as
                 appropriate, or mixes variable names and indices.
             ValueError:
-                On variable count or array length mismatch; if ``node_map`` is omitted
+                For FEPOLYGON or FEPOLYHEDRON (not supported in SZPLT files, see
+                :meth:`write_poly_zone`); on variable count or array length mismatch;
+                if ``node_map`` is omitted
                 without ``con_sharing``; if ``var_sharing``/``con_sharing`` reference a
                 zone with no recorded node/cell count, or one whose count disagrees with
                 this zone's; or a variable named in both *passive_vars* and
@@ -811,10 +812,14 @@ class TecplotSzlWriter(TecplotWriter):
                 "by the SZL binary format. Use DataPacking.BLOCK (the default) "
                 "or write to a .dat file instead."
             )
+        if zone_type in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
+            raise ValueError(
+                f"{zone_type.name} zones are face-based, use write_poly_zone "
+                "(which SZPLT files do not support)."
+            )
         if zone_type not in _FE_SIMPLE:
             raise NotImplementedError(
-                f"Zone type {zone_type.name!r} is not supported by szl file formats. "
-                "Polygon and polyhedral zones require the low-level API."
+                f"Zone type {zone_type.name!r} is not supported by szl file formats."
             )
 
         # Convert input data to NumPy arrays
@@ -957,4 +962,38 @@ class TecplotSzlWriter(TecplotWriter):
                 ),
                 num_face_connections=num_face_cons or None,
             )
+        )
+
+    def write_poly_zone(
+        self,
+        data: Sequence[npt.ArrayLike],
+        zone_type: ZoneType,
+        *,
+        face_nodes: npt.ArrayLike | None = None,
+        face_node_counts: npt.ArrayLike | None = None,
+        face_left_elements: npt.ArrayLike | None = None,
+        face_right_elements: npt.ArrayLike | None = None,
+        boundary_connection_counts: npt.ArrayLike | None = None,
+        boundary_connection_elements: npt.ArrayLike | None = None,
+        boundary_connection_zones: npt.ArrayLike | None = None,
+        title: str | None = None,
+        variables: list[str] | None = None,
+        value_locations: Sequence[ValueLocation] | None = None,
+        passive_vars: PassiveVarsSpec | None = None,
+        var_sharing: VarSharingSpec | None = None,
+        con_sharing: int | None = None,
+        solution_time: float = 0.0,
+        strand_id: int = 0,
+        aux: dict[str, Any] | None = None,
+        datapacking: DataPacking | str = DataPacking.BLOCK,
+    ) -> None:
+        """Not supported: SZPLT files cannot hold polygon or polyhedron zones.
+
+        Raises:
+            NotImplementedError: Always. Write to a ``.plt`` or ``.dat`` file instead,
+                see :meth:`TecplotPltWriter.write_poly_zone`.
+        """
+        raise NotImplementedError(
+            "Polygon and polyhedron zones are not yet supported in SZPLT files by the "
+            "TecIO library. Write a .plt or .dat file instead."
         )

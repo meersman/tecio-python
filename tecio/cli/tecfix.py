@@ -104,10 +104,11 @@ from .. import (
     DataType,
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotSzlWriter,
-    ZoneType,
 )
 from .. import open as tecio_open
+from .._writer import poly_face_kwargs
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -115,9 +116,6 @@ from .. import open as tecio_open
 
 #: DataTypes that can hold NaN / Inf.
 _FLOAT_TYPES: frozenset[DataType] = frozenset({DataType.FLOAT, DataType.DOUBLE})
-
-#: FE zone types that the Write API cannot copy.
-_FE_POLY: frozenset[ZoneType] = frozenset({ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON})
 
 
 # ---------------------------------------------------------------------------
@@ -430,14 +428,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for i, zone in enumerate(reader.zones):
                     zt = zone.zone_type
 
-                    if zt in _FE_POLY:
-                        print(
-                            f"Warning: zone {i + 1} ('{zone.title}') is {zt.name} "
-                            "and cannot be copied — skipping.",
-                            file=sys.stderr,
-                        )
-                        continue
-
                     (
                         writer_data,
                         writer_locs,
@@ -494,6 +484,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                     if isinstance(zone, TecplotOrderedZoneReader):
                         writer.write_ordered_zone(data=writer_data, **common_kw)
+                    elif isinstance(zone, TecplotPolyZoneReader):
+                        con_sharing = zone.shared_connectivity
+                        writer.write_poly_zone(
+                            zone_type=zt,
+                            data=writer_data,
+                            con_sharing=con_sharing,
+                            **(
+                                {}
+                                if con_sharing is not None
+                                else poly_face_kwargs(zone)
+                            ),
+                            **common_kw,
+                        )
                     elif isinstance(zone, TecplotFEZoneReader):
                         con_sharing = zone.shared_connectivity
                         fe_kw = common_kw.copy()
@@ -514,7 +517,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else:
                         raise NotImplementedError(
                             f"Zone '{zone.title}' is neither an ordered nor a "
-                            "classic FE zone; fixing is not supported for it."
+                            "classic FE or poly zone; fixing is not supported for it."
                         )
 
     except Exception as exc:  # noqa: BLE001

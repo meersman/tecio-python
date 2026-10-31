@@ -69,7 +69,7 @@ jobs:
         run: |
           echo "TECIO_LIB=${{ github.workspace }}/lib/linux_x86_64/libtecio.so" >> "$GITHUB_ENV"
       - name: Install package
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,mat]"
       - name: Run tests with pytest
         run: pytest --cov=tecio --cov-report=xml --cov-report=term-missing --junitxml=junit.xml
       - name: Upload coverage to Codecov

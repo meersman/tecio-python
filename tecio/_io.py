@@ -32,11 +32,6 @@ Note:
 Note:
     Legacy PLT files (v75, v107, v111) are read-only, so ``"a"`` and ``"a+"`` raise
     :exc:`ValueError` for them.
-
-Note:
-    FEPOLYGON and FEPOLYHEDRON zones are not copied during append operations because the
-    ``Write`` API does not yet expose a poly-zone writer. A :exc:`NotImplementedError`
-    is raised if such zones are encountered in the source file.
 """
 
 # ruff: noqa: A001 N806
@@ -60,12 +55,13 @@ from ._reader import (
     TecplotAuxDataReader,
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotZoneReader,
 )
 from ._szl_read import TecplotSzlReader
 from ._szl_write import TecplotSzlWriter
-from ._writer import TecplotWriter
+from ._writer import TecplotWriter, poly_face_kwargs
 
 # --------------------------------------------------------------------------------------
 # Dispatch table
@@ -164,20 +160,10 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
         writer: An already-opened ``Write`` instance (file handle live).
 
     Raises:
-        NotImplementedError: If a FEPOLYGON or FEPOLYHEDRON zone is
-            encountered, as the ``Write`` API does not yet support them.
+        NotImplementedError: If a zone is neither ordered, finite-element, nor poly.
 
     """
     for zone in reader.zones:
-        if isinstance(zone, TecplotFEZoneReader) and zone.zone_type in (
-            ZoneType.FEPOLYGON,
-            ZoneType.FEPOLYHEDRON,
-        ):
-            raise NotImplementedError(
-                f"Zone '{zone.title}' is {zone.zone_type.name} — poly zone "
-                "copying is not supported by the Write API yet."
-            )
-
         # Collect per-variable metadata and data arrays
         data: list[npt.NDArray] = []
         value_locations: list[ValueLocation] = []
@@ -206,6 +192,15 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
 
         if isinstance(zone, TecplotOrderedZoneReader):
             writer.write_ordered_zone(data=data, **common_kw)
+        elif isinstance(zone, TecplotPolyZoneReader):
+            con_sharing = zone.shared_connectivity
+            writer.write_poly_zone(
+                zone_type=zone.zone_type,
+                data=data,
+                con_sharing=con_sharing,
+                **({} if con_sharing is not None else poly_face_kwargs(zone)),
+                **common_kw,
+            )
         elif isinstance(zone, TecplotFEZoneReader):
             # Forward connectivity sharing: when shared, pass ``con_sharing`` and omit
             # the node map so the writer derives the node/cell counts from the source
@@ -220,7 +215,7 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
             )
         else:
             raise NotImplementedError(
-                f"Zone '{zone.title}' is neither an ordered nor a classic FE "
+                f"Zone '{zone.title}' is neither an ordered, classic FE, nor poly "
                 "zone, copying it is not supported by the Write API yet."
             )
 
@@ -241,14 +236,9 @@ class AppendWrite:
 
     The copy step preserves the original title, variable list, file type, all zone data,
     all zone metadata (strand, solution time, aux data), and variable sharing.
-    Connectivity is copied for FE zones.
+    Connectivity is copied for FE and poly zones.
 
     Do not instantiate this class directly — use :func:`tecio.open`.
-
-    Note:
-        FEPOLYGON and FEPOLYHEDRON zones cannot be copied because the Write API does not
-        yet expose a poly-zone writer. A :exc:`NotImplementedError` is raised during
-        ``open()`` if such zones are present in the source file.
 
     Example:
         >>> with tecio.open("flow.szplt", "a") as tec:
@@ -339,7 +329,7 @@ class AppendWrite:
         Delegates to the underlying format writer's ``write_fe_zone``
         (e.g. :meth:`tecio.TecplotWriter.write_fe_zone`). The ``variables`` parameter is
         not meaningful here — the variable list is fixed from the existing file.
-        FEPOLYGON and FEPOLYHEDRON are not supported.
+        FEPOLYGON and FEPOLYHEDRON are face-based, use :meth:`write_poly_zone`.
 
         Args:
             zone_type (ZoneType): Element topology. One of:
@@ -378,9 +368,49 @@ class AppendWrite:
             aux (dict[str, str] | None): Zone-level auxiliary data.
 
         Raises:
-            NotImplementedError: If ``zone_type`` is FEPOLYGON or FEPOLYHEDRON.
+            ValueError: If ``zone_type`` is FEPOLYGON or FEPOLYHEDRON.
         """
         self._writer.write_fe_zone(*args, **kwargs)
+
+    def write_poly_zone(self, *args: Any, **kwargs: Any) -> None:  # noqa: D417
+        """Append a polygon or polyhedron (face-based) zone.
+
+        Delegates to the underlying format writer's ``write_poly_zone``
+        (e.g. :meth:`tecio.TecplotPltWriter.write_poly_zone`). The ``variables``
+        parameter is not meaningful here, the variable list is fixed from the existing
+        file. All indices are 0-based.
+
+        Args:
+            zone_type (ZoneType): :attr:`~tecio.libtecio.ZoneType.FEPOLYGON` or
+                :attr:`~tecio.libtecio.ZoneType.FEPOLYHEDRON`.
+            data (Sequence[ndarray]): One 1-D array per active variable. NODAL arrays
+                need ``num_nodes`` values, CELL_CENTERED arrays ``num_elements``, both
+                inferred from the face map.
+            face_nodes (array-like | None): Flat node indices of all faces.
+            face_node_counts (array-like | None): Nodes per face. Required for
+                polyhedra, optional for polygons (always 2).
+            face_left_elements (array-like | None): Element left of each face, ``-1``
+                for none, ``-(b + 2)`` for boundary face ``b``.
+            face_right_elements (array-like | None): Element right of each face.
+            boundary_connection_counts (array-like | None): Connections per boundary
+                face.
+            boundary_connection_elements (array-like | None): Flat neighbor elements.
+            boundary_connection_zones (array-like | None): Flat zone of each neighbor.
+            title (str | None): Zone title. Defaults to ``"Poly_Zone_{n}"``.
+            value_locations (Sequence[ValueLocation] | None): Per-variable value
+                location for active variables. Defaults to all NODAL.
+            passive_vars (list | tuple | set | None): Variables to mark passive.
+            var_sharing (dict[str | int, int] | None): ``{variable: source zone}``.
+            con_sharing (int | None): Zone to share the face map from (0-based).
+            solution_time (float): Solution time. Defaults to ``0.0``.
+            strand_id (int): Strand ID. Defaults to ``0``.
+            aux (dict[str, str] | None): Zone-level auxiliary data.
+
+        Raises:
+            NotImplementedError: For SZPLT files, which cannot hold poly zones.
+            ValueError: On an inconsistent or out of range face map.
+        """
+        self._writer.write_poly_zone(*args, **kwargs)
 
     def add_auxdataset_dict(self, auxdict: dict[str, Any]) -> None:
         """Buffer dataset-level auxiliary data."""
@@ -745,8 +775,9 @@ def open(
            * - ``variables``
              - ``None``
              - Variable name list. For SZL and PLT this may be deferred to the first
-               :meth:`~tecio.TecplotWriter.write_ordered_zone` or
-               :meth:`~tecio.TecplotWriter.write_fe_zone` call. Required at open time
+               :meth:`~tecio.TecplotWriter.write_ordered_zone`,
+               :meth:`~tecio.TecplotWriter.write_fe_zone`, or
+               :meth:`~tecio.TecplotWriter.write_poly_zone` call. Required at open time
                for DAT.
            * - ``file_type``
              - ``FileType.FULL``
@@ -774,8 +805,6 @@ def open(
             on a legacy PLT file (v75, v107, v111).
         FileNotFoundError: ``'r'``, ``'a'``, or ``'a+'`` on a missing file.
         FileExistsError: ``'x'`` on an existing file.
-        NotImplementedError: Append mode on a file containing FEPOLYGON or FEPOLYHEDRON
-            zones.
 
     Examples:
         Read a file:

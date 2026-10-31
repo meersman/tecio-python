@@ -3,10 +3,10 @@
 Every format's writer (SZL, PLT, DAT) exposes the same lifecycle: construct with a path
 and optional variable list (eager or lazy open), buffer auxiliary data with
 :meth:`~TecplotWriter.add_auxdataset_dict`/ :meth:`~TecplotWriter.add_auxvar_dict`,
-write zones with ``write_ordered_zone``/ ``write_fe_zone``, and close (directly or via
-context manager). This module defines the parts of that lifecycle that are identical
-across formats once, so the three writers can no longer drift apart the way the readers
-had.
+write zones with ``write_ordered_zone``/ ``write_fe_zone``/ ``write_poly_zone``, and
+close (directly or via context manager). This module defines the parts of that
+lifecycle that are identical across formats once, so the three writers can no longer
+drift apart the way the readers had.
 
 Notes:
     * Unlike the reader hierarchy, writer instances are not made immutable.  A writer is
@@ -18,12 +18,11 @@ Notes:
       nearly verbatim in all three formats. Each format only implements the two small
       hooks that actually differ, writing one dataset-level item and one variable-level
       item.
-    * ``_open``, ``close``, ``write_ordered_zone``, and ``write_fe_zone`` stay
-      abstract: how a file is opened/closed and how a zone is actually written
-      are genuinely format-specific (a live C handle for SZL, a global implicit
-      context for PLT's classic API, a plain text file for DAT). Their
-      signatures here are the common shape for documentation; Python doesn't
-      enforce exact signature matching on
+    * ``_open``, ``close``, and the ``write_*_zone`` methods stay abstract: how a file
+      is opened/closed and how a zone is actually written are genuinely
+      format-specific (a live C handle for SZL, a global implicit context for PLT's
+      classic API, a plain text file for DAT). Their signatures here are the common
+      shape for documentation; Python doesn't enforce exact signature matching on
       ``abstractmethod``, so a format may add its own extra keyword-only parameters
       (SZL's ``flush``, for subzone flushing mid-write) without conflict.
 """
@@ -35,7 +34,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -49,6 +48,10 @@ from ._constants import (
     ZoneType,
 )
 from ._meta import WriterMeta
+from ._utils import public_dir
+
+if TYPE_CHECKING:
+    from ._reader import TecplotPolyZoneReader
 
 
 class EmptyZoneWarning(UserWarning):
@@ -691,6 +694,142 @@ def prepare_ordered_zone(
 
 
 @dataclass
+class _ZoneVariables:
+    """Per-variable state shared by every unstructured zone preparation."""
+
+    value_locations: list[ValueLocation]
+    passive_flags: list[bool]
+    share_idx: list[int | None]
+    active_var_idx: list[int]
+    value_locations_global: list[ValueLocation]
+    variable_types_global: list[DataType]
+
+
+def _prepare_zone_variables(
+    arrays: Sequence[npt.NDArray],
+    variable_types: Sequence[DataType],
+    *,
+    value_locations: Sequence[ValueLocation] | None,
+    passive_vars: PassiveVarsSpec | None,
+    var_sharing: VarSharingSpec | None,
+    dataset_variables: Sequence[str],
+    num_nodes: int,
+    num_cells: int,
+    meta: WriterMeta,
+    stacklevel: int,
+) -> _ZoneVariables | None:
+    """Resolve and validate the variable arguments of an unstructured zone.
+
+    Resolves defaults, validates the active-variable count and every array's size
+    (local and shared) against *num_nodes*/*num_cells*, and builds the dataset-level
+    value location and type arrays every format's zone-creation call needs.
+
+    Returns:
+        The resolved variable state, or ``None`` after emitting an
+        :class:`EmptyZoneWarning` (attributed *stacklevel* frames up) when every
+        dataset variable is passive or shared.
+
+    Raises:
+        ValueError: On any inconsistency, see :func:`prepare_fe_zone`.
+    """
+    if value_locations is None:
+        value_locations = [ValueLocation.NODAL] * len(arrays)
+    passive_flags, share_idx = _normalize_passive_and_sharing(
+        passive_vars, var_sharing, dataset_variables
+    )
+
+    if len(arrays) != len(dataset_variables):
+        expected_vars = sum(
+            1
+            for is_passive, sharing_zone_idx in zip(
+                passive_flags, share_idx, strict=True
+            )
+            if not is_passive and sharing_zone_idx is None
+        )
+        if expected_vars == 0:
+            warnings.warn(
+                "Zone has no active variables to write (every variable is "
+                "passive or shared); skipping this zone.",
+                EmptyZoneWarning,
+                stacklevel=stacklevel,
+            )
+            return None
+        if len(arrays) == 0:
+            raise ValueError(
+                "No data arrays provided for active variables. "
+                f"Expected {expected_vars} active variables based on "
+                "passive_vars and var_sharing settings."
+            )
+        if len(arrays) != expected_vars:
+            raise ValueError(
+                f"Expected {expected_vars} data arrays, got {len(arrays)}."
+            )
+
+    active_var_idx = [
+        var_idx
+        for var_idx, (is_passive, sharing_zone_idx) in enumerate(
+            zip(passive_flags, share_idx, strict=True)
+        )
+        if (not is_passive) and (sharing_zone_idx is None)
+    ]
+
+    # Shared variable data shape validation
+    for var_idx, src in enumerate(share_idx):
+        if src is None:
+            continue
+        src_zone = meta.zone(src)
+        if src_zone is None:
+            raise ValueError(
+                f"Variable {var_idx} shares from zone {src}, which has "
+                "not been written yet."
+            )
+        src_loc = (
+            src_zone.value_locations[var_idx]
+            if var_idx < len(src_zone.value_locations)
+            else ValueLocation.NODAL
+        )
+        if src_loc == ValueLocation.CELL_CENTERED:
+            if src_zone.num_elements != num_cells:
+                raise ValueError(
+                    f"Variable {var_idx} shares from zone {src} with "
+                    f"{src_zone.num_elements} cells, which does not "
+                    f"match this zone's cell count of {num_cells}."
+                )
+        elif src_zone.num_nodes != num_nodes:
+            raise ValueError(
+                f"Variable {var_idx} shares from zone {src} with "
+                f"{src_zone.num_nodes} nodes, which does not match "
+                f"this zone's node count of {num_nodes}."
+            )
+
+    # Local variable data shape validation
+    for i, (arr, loc) in enumerate(zip(arrays, value_locations, strict=True)):
+        if (loc == ValueLocation.NODAL) and (arr.size != num_nodes):
+            raise ValueError(
+                f"Array {i} is NODAL but has {arr.size} values, expected {num_nodes}."
+            )
+        elif (loc == ValueLocation.CELL_CENTERED) and (arr.size != num_cells):
+            raise ValueError(
+                f"Array {i} is CELL_CENTERED but has {arr.size} "
+                f"values, expected {num_cells}."
+            )
+
+    variable_types_global = [DataType.DOUBLE] * len(dataset_variables)
+    value_locations_global = [ValueLocation.NODAL] * len(dataset_variables)
+    for local_idx, var_idx in enumerate(active_var_idx):
+        variable_types_global[var_idx] = variable_types[local_idx]
+        value_locations_global[var_idx] = value_locations[local_idx]
+    return _ZoneVariables(
+        value_locations=list(value_locations),
+        passive_flags=[bool(p) for p in passive_flags],
+        share_idx=list(share_idx),
+        active_var_idx=active_var_idx,
+        value_locations_global=value_locations_global,
+        variable_types_global=variable_types_global,
+    )
+
+
+@dataclass
 class PreparedFEZone:
     """Validated, normalized inputs for writing one finite-element zone.
 
@@ -809,94 +948,26 @@ def prepare_fe_zone(
                 "from another zone via con_sharing."
             )
 
-        if value_locations is None:
-            value_locations = [ValueLocation.NODAL] * len(arrays)
-        passive_flags, share_idx = _normalize_passive_and_sharing(
-            passive_vars, var_sharing, dataset_variables
+        zone_vars = _prepare_zone_variables(
+            arrays,
+            variable_types,
+            value_locations=value_locations,
+            passive_vars=passive_vars,
+            var_sharing=var_sharing,
+            dataset_variables=dataset_variables,
+            num_nodes=num_nodes,
+            num_cells=num_cells,
+            meta=meta,
+            stacklevel=4,
         )
-
-        if len(arrays) != len(dataset_variables):
-            expected_vars = sum(
-                1
-                for is_passive, sharing_zone_idx in zip(
-                    passive_flags, share_idx, strict=True
-                )
-                if not is_passive and sharing_zone_idx is None
-            )
-            if expected_vars == 0:
-                warnings.warn(
-                    "Zone has no active variables to write (every variable is "
-                    "passive or shared); skipping this zone.",
-                    EmptyZoneWarning,
-                    stacklevel=3,
-                )
-                return None
-            if len(arrays) == 0:
-                raise ValueError(
-                    "No data arrays provided for active variables. "
-                    f"Expected {expected_vars} active variables based on "
-                    "passive_vars and var_sharing settings."
-                )
-            if len(arrays) != expected_vars:
-                raise ValueError(
-                    f"Expected {expected_vars} data arrays, got {len(arrays)}."
-                )
-
-        active_var_idx = [
-            var_idx
-            for var_idx, (is_passive, sharing_zone_idx) in enumerate(
-                zip(passive_flags, share_idx, strict=True)
-            )
-            if (not is_passive) and (sharing_zone_idx is None)
-        ]
-
-        # Shared variable data shape validation
-        for var_idx, src in enumerate(share_idx):
-            if src is None:
-                continue
-            src_zone = meta.zone(src)
-            if src_zone is None:
-                raise ValueError(
-                    f"Variable {var_idx} shares from zone {src}, which has "
-                    "not been written yet."
-                )
-            src_loc = (
-                src_zone.value_locations[var_idx]
-                if var_idx < len(src_zone.value_locations)
-                else ValueLocation.NODAL
-            )
-            if src_loc == ValueLocation.CELL_CENTERED:
-                if src_zone.num_elements != num_cells:
-                    raise ValueError(
-                        f"Variable {var_idx} shares from zone {src} with "
-                        f"{src_zone.num_elements} cells, which does not "
-                        f"match this zone's cell count of {num_cells}."
-                    )
-            elif src_zone.num_nodes != num_nodes:
-                raise ValueError(
-                    f"Variable {var_idx} shares from zone {src} with "
-                    f"{src_zone.num_nodes} nodes, which does not match "
-                    f"this zone's node count of {num_nodes}."
-                )
-
-        # Local variable data shape validation
-        for i, (arr, loc) in enumerate(zip(arrays, value_locations, strict=True)):
-            if (loc == ValueLocation.NODAL) and (arr.size != num_nodes):
-                raise ValueError(
-                    f"Array {i} is NODAL but has {arr.size} values, "
-                    f"expected {num_nodes}."
-                )
-            elif (loc == ValueLocation.CELL_CENTERED) and (arr.size != num_cells):
-                raise ValueError(
-                    f"Array {i} is CELL_CENTERED but has {arr.size} "
-                    f"values, expected {num_cells}."
-                )
-
-        variable_types_global = [DataType.DOUBLE] * len(dataset_variables)
-        value_locations_global = [ValueLocation.NODAL] * len(dataset_variables)
-        for local_idx, var_idx in enumerate(active_var_idx):
-            variable_types_global[var_idx] = variable_types[local_idx]
-            value_locations_global[var_idx] = value_locations[local_idx]
+        if zone_vars is None:
+            return None
+        value_locations = zone_vars.value_locations
+        passive_flags = zone_vars.passive_flags
+        share_idx = zone_vars.share_idx
+        active_var_idx = zone_vars.active_var_idx
+        value_locations_global = zone_vars.value_locations_global
+        variable_types_global = zone_vars.variable_types_global
 
         # Face-neighbor connections
         if face_neighbors is not None and face_neighbor_mode is None:
@@ -940,6 +1011,378 @@ def prepare_fe_zone(
             face_neighbor_mode if face_neighbors_arr is not None else None
         ),
         num_face_connections=num_face_connections,
+    )
+
+
+@dataclass
+class _PolyConnectivity:
+    """Validated face map of a poly zone plus the counts derived from it."""
+
+    num_nodes: int
+    num_cells: int
+    num_faces: int
+    total_face_nodes: int
+    num_boundary_faces: int
+    num_boundary_connections: int
+    face_node_counts: npt.NDArray | None
+    face_nodes: npt.NDArray | None
+    face_left_elements: npt.NDArray | None
+    face_right_elements: npt.NDArray | None
+    boundary_connection_counts: npt.NDArray | None
+    boundary_connection_elements: npt.NDArray | None
+    boundary_connection_zones: npt.NDArray | None
+
+
+@dataclass
+class PreparedPolyZone:
+    """Validated, normalized inputs for writing one poly (face-based) zone.
+
+    The face arrays are 0-based exactly as passed in (``-1`` for no element,
+    ``-(b + 2)`` for boundary face ``b``) and keep their integer dtype. A writer
+    converts to its own convention and dtype right before dispatch. When connectivity
+    is shared (:attr:`con_sharing` is not None) the array fields are None and the
+    counts come from the source zone.
+    """
+
+    value_locations: list[ValueLocation]
+    passive_vars: list[bool]
+    var_sharing: list[int | None]
+    con_sharing: int | None
+    active_var_idx: list[int]  # 0-based dataset indices being written now
+    value_locations_global: list[ValueLocation]
+    variable_types_global: list[DataType]
+    connectivity: _PolyConnectivity
+
+
+def _as_index_array(value: npt.ArrayLike, name: str) -> npt.NDArray:
+    """Return *value* as a flat integer array, without copying when possible."""
+    arr = np.asarray(value)
+    if arr.dtype.kind not in "iu":
+        raise ValueError(f"{name} must be an integer array, got dtype {arr.dtype}.")
+    return arr.ravel()
+
+
+def _check_boundary_arrays(
+    counts: npt.ArrayLike | None,
+    elements: npt.ArrayLike | None,
+    zones: npt.ArrayLike | None,
+    *,
+    num_cells: int,
+    meta: WriterMeta,
+) -> tuple[npt.NDArray | None, npt.NDArray | None, npt.NDArray | None]:
+    """Validate the boundary connection arrays against the zones they reference.
+
+    The Tecplot libraries do not bounds-check these, a bad zone or element index
+    corrupts the file or crashes, so they are checked here.
+    """
+    given = [a is not None for a in (counts, elements, zones)]
+    if not any(given):
+        return None, None, None
+    if not all(given):
+        raise ValueError(
+            "boundary_connection_counts, boundary_connection_elements and "
+            "boundary_connection_zones must be given together."
+        )
+    assert counts is not None and elements is not None and zones is not None
+    n_counts = _as_index_array(counts, "boundary_connection_counts")
+    n_elems = _as_index_array(elements, "boundary_connection_elements")
+    n_zones = _as_index_array(zones, "boundary_connection_zones")
+    if n_counts.size and n_counts.min() < 1:
+        raise ValueError("boundary_connection_counts entries must be positive.")
+    if int(n_counts.sum()) != n_elems.size:
+        raise ValueError(
+            f"boundary_connection_counts sums to {int(n_counts.sum())}, but "
+            f"boundary_connection_elements has {n_elems.size} entries."
+        )
+    if n_zones.size != n_elems.size:
+        raise ValueError(
+            f"boundary_connection_zones has {n_zones.size} entries, expected "
+            f"{n_elems.size}."
+        )
+    if n_elems.size == 0:
+        return n_counts, n_elems, n_zones
+
+    new_index = meta.num_zones
+    if n_elems.min() < 0:
+        raise ValueError("boundary_connection_elements must be 0-based (>= 0).")
+    if n_zones.min() < 0 or int(n_zones.max()) > new_index:
+        raise ValueError(
+            "boundary_connection_zones must be 0-based and reference a zone already "
+            f"written or this zone (0 to {new_index})."
+        )
+    for zone in np.unique(n_zones).tolist():
+        if zone == new_index:
+            cells: int | None = num_cells
+        else:
+            zone_meta = meta.zone(zone)
+            cells = zone_meta.num_cells if zone_meta is not None else None
+        if cells is not None and int(n_elems[n_zones == zone].max()) >= cells:
+            raise ValueError(
+                "boundary_connection_elements references an element past the "
+                f"{cells} elements of zone {zone}."
+            )
+    return n_counts, n_elems, n_zones
+
+
+def _check_poly_connectivity(
+    zone_type: ZoneType,
+    face_nodes: npt.ArrayLike | None,
+    face_node_counts: npt.ArrayLike | None,
+    face_left_elements: npt.ArrayLike | None,
+    face_right_elements: npt.ArrayLike | None,
+    boundary_connection_counts: npt.ArrayLike | None,
+    boundary_connection_elements: npt.ArrayLike | None,
+    boundary_connection_zones: npt.ArrayLike | None,
+    meta: WriterMeta,
+) -> _PolyConnectivity:
+    """Validate the face map of a poly zone that owns its connectivity."""
+    if face_nodes is None or face_left_elements is None or face_right_elements is None:
+        raise ValueError(
+            "face_nodes, face_left_elements and face_right_elements are required "
+            "unless connectivity is shared from another zone via con_sharing."
+        )
+    nodes = _as_index_array(face_nodes, "face_nodes")
+    left = _as_index_array(face_left_elements, "face_left_elements")
+    right = _as_index_array(face_right_elements, "face_right_elements")
+    num_faces = left.size
+    if num_faces == 0:
+        raise ValueError("A poly zone needs at least one face.")
+    if right.size != num_faces:
+        raise ValueError(
+            f"face_right_elements has {right.size} entries, expected one per face "
+            f"({num_faces}, the length of face_left_elements)."
+        )
+
+    counts: npt.NDArray | None = None
+    if zone_type is ZoneType.FEPOLYHEDRON:
+        if face_node_counts is None:
+            raise ValueError("face_node_counts is required for FEPOLYHEDRON zones.")
+        counts = _as_index_array(face_node_counts, "face_node_counts")
+        if counts.size != num_faces:
+            raise ValueError(
+                f"face_node_counts has {counts.size} entries, expected {num_faces}."
+            )
+        if counts.min() < 1:
+            raise ValueError("face_node_counts entries must be positive.")
+        total_face_nodes = int(counts.sum())
+    else:
+        # Every polygon face is an edge. Counts are implied, but accept them when
+        # they agree so a reader's arrays can be passed straight back in.
+        total_face_nodes = 2 * num_faces
+        if face_node_counts is not None:
+            given = _as_index_array(face_node_counts, "face_node_counts")
+            if given.size != num_faces or (given != 2).any():
+                raise ValueError(
+                    "FEPOLYGON faces always have 2 nodes: omit face_node_counts or "
+                    "pass 2 for every face."
+                )
+    if nodes.size != total_face_nodes:
+        raise ValueError(
+            f"face_nodes has {nodes.size} entries, expected {total_face_nodes}."
+        )
+    if nodes.min() < 0:
+        raise ValueError("face_nodes must be 0-based node indices (no negatives).")
+
+    top = max(int(left.max()), int(right.max()))
+    if top < 0:
+        raise ValueError(
+            "No face references an element in face_left_elements/face_right_elements."
+        )
+    num_cells = top + 1
+
+    bcounts, belems, bzones = _check_boundary_arrays(
+        boundary_connection_counts,
+        boundary_connection_elements,
+        boundary_connection_zones,
+        num_cells=num_cells,
+        meta=meta,
+    )
+    num_boundary_faces = 0 if bcounts is None else bcounts.size
+    # Boundary references in the left/right element arrays are -(b + 2) for boundary
+    # face b.
+    lowest = min(int(left.min()), int(right.min()))
+    if lowest < -1 and -2 - lowest >= num_boundary_faces:
+        raise ValueError(
+            "face_left_elements/face_right_elements reference boundary face "
+            f"{-2 - lowest}, but only {num_boundary_faces} boundary faces are defined."
+        )
+    return _PolyConnectivity(
+        num_nodes=int(nodes.max()) + 1,
+        num_cells=num_cells,
+        num_faces=num_faces,
+        total_face_nodes=total_face_nodes,
+        num_boundary_faces=num_boundary_faces,
+        num_boundary_connections=0 if belems is None else belems.size,
+        face_node_counts=counts,
+        face_nodes=nodes,
+        face_left_elements=left,
+        face_right_elements=right,
+        boundary_connection_counts=bcounts,
+        boundary_connection_elements=belems,
+        boundary_connection_zones=bzones,
+    )
+
+
+def _shared_poly_connectivity(
+    zone_type: ZoneType, con_sharing: int, meta: WriterMeta
+) -> _PolyConnectivity:
+    """Take the face-map sizes of a zone sharing connectivity from *con_sharing*."""
+    src = meta.zone(con_sharing)
+    if src is None or src.num_faces is None or src.num_nodes is None:
+        raise ValueError(
+            f"con_sharing={con_sharing} references a zone that has not been written "
+            "yet, or is not a poly zone."
+        )
+    if src.zone_type is not zone_type:
+        raise ValueError(
+            f"con_sharing={con_sharing} is a {src.zone_type.name} zone, which cannot "
+            f"share connectivity with a {zone_type.name} zone."
+        )
+    if src.num_boundary_faces:
+        raise ValueError(
+            f"con_sharing={con_sharing} has boundary faces, and a poly zone with "
+            "connected boundary faces cannot share its connectivity."
+        )
+    assert src.num_elements is not None  # poly zones always record it
+    return _PolyConnectivity(
+        num_nodes=src.num_nodes,
+        num_cells=src.num_elements,
+        num_faces=src.num_faces,
+        total_face_nodes=src.total_face_nodes or 0,
+        num_boundary_faces=src.num_boundary_faces or 0,
+        num_boundary_connections=src.num_boundary_connections or 0,
+        face_node_counts=None,
+        face_nodes=None,
+        face_left_elements=None,
+        face_right_elements=None,
+        boundary_connection_counts=None,
+        boundary_connection_elements=None,
+        boundary_connection_zones=None,
+    )
+
+
+def prepare_poly_zone(
+    arrays: Sequence[npt.NDArray],
+    variable_types: Sequence[DataType],
+    zone_type: ZoneType,
+    *,
+    face_nodes: npt.ArrayLike | None,
+    face_node_counts: npt.ArrayLike | None,
+    face_left_elements: npt.ArrayLike | None,
+    face_right_elements: npt.ArrayLike | None,
+    boundary_connection_counts: npt.ArrayLike | None,
+    boundary_connection_elements: npt.ArrayLike | None,
+    boundary_connection_zones: npt.ArrayLike | None,
+    value_locations: Sequence[ValueLocation] | None,
+    passive_vars: PassiveVarsSpec | None,
+    var_sharing: VarSharingSpec | None,
+    con_sharing: int | None,
+    dataset_variables: Sequence[str],
+    meta: WriterMeta,
+    on_error: Callable[[], None] | None = None,
+) -> PreparedPolyZone | None:
+    """Validate and normalize inputs for writing a poly (face-based) zone.
+
+    Shared across formats. Validates the face map (sizes, index ranges, boundary
+    references, and the zones and elements that boundary connections point to), derives
+    the node and element counts from it (or from the *con_sharing* source zone), and
+    resolves the variable arguments exactly as :func:`prepare_fe_zone` does.
+
+    Args:
+        arrays: NumPy arrays for the active (non-passive, non-shared) variables.
+        variable_types: Per-active-variable data type, one per array in *arrays*.
+        zone_type: FEPOLYGON or FEPOLYHEDRON.
+        face_nodes: Flat 0-based node indices of all faces.
+        face_node_counts: Nodes per face, required for FEPOLYHEDRON. Optional for
+            FEPOLYGON, where every face has 2 nodes.
+        face_left_elements: Element on the left of each face (0-based, -1 for none,
+            -(b + 2) for boundary face b).
+        face_right_elements: Same for the right side.
+        boundary_connection_counts: Connections per boundary face.
+        boundary_connection_elements: Flat 0-based neighbor elements.
+        boundary_connection_zones: Flat 0-based zone of each neighbor element.
+        value_locations: Per-active-variable value location, or None for all-NODAL.
+        passive_vars: Variables to mark passive, see :func:`prepare_fe_zone`.
+        var_sharing: Variables to share from another zone, see :func:`prepare_fe_zone`.
+        con_sharing: Source zone index to share connectivity from, or None. The source
+            must be a poly zone of the same type without boundary faces.
+        dataset_variables: The full dataset variable name list.
+        meta: The writer's own zone metadata.
+        on_error: Optional callback invoked once before any ValueError is raised.
+
+    Returns:
+        A :class:`PreparedPolyZone`, or ``None`` after an :class:`EmptyZoneWarning`
+        when every dataset variable is passive or shared.
+
+    Raises:
+        ValueError: On any inconsistency in the face map, the variable arguments, or a
+            *zone_type* that is not FEPOLYGON or FEPOLYHEDRON.
+        TypeError: *passive_vars*/*var_sharing* has the wrong type.
+        KeyError: A *passive_vars*/*var_sharing* name is unknown.
+        IndexError: A *passive_vars*/*var_sharing* index is out of range.
+    """
+    try:
+        if zone_type not in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
+            raise ValueError(
+                f"write_poly_zone needs FEPOLYGON or FEPOLYHEDRON, got "
+                f"{zone_type.name}; use write_fe_zone for other finite-element zones."
+            )
+        if con_sharing is not None:
+            given = (
+                face_nodes,
+                face_node_counts,
+                face_left_elements,
+                face_right_elements,
+                boundary_connection_counts,
+                boundary_connection_elements,
+                boundary_connection_zones,
+            )
+            if any(a is not None for a in given):
+                raise ValueError(
+                    "Face map arrays cannot be given together with con_sharing, the "
+                    "connectivity comes from the source zone."
+                )
+            conn = _shared_poly_connectivity(zone_type, con_sharing, meta)
+        else:
+            conn = _check_poly_connectivity(
+                zone_type,
+                face_nodes,
+                face_node_counts,
+                face_left_elements,
+                face_right_elements,
+                boundary_connection_counts,
+                boundary_connection_elements,
+                boundary_connection_zones,
+                meta,
+            )
+        zone_vars = _prepare_zone_variables(
+            arrays,
+            variable_types,
+            value_locations=value_locations,
+            passive_vars=passive_vars,
+            var_sharing=var_sharing,
+            dataset_variables=dataset_variables,
+            num_nodes=conn.num_nodes,
+            num_cells=conn.num_cells,
+            meta=meta,
+            stacklevel=4,
+        )
+        if zone_vars is None:
+            return None
+    except ValueError:
+        if on_error is not None:
+            on_error()
+        raise
+
+    return PreparedPolyZone(
+        value_locations=zone_vars.value_locations,
+        passive_vars=zone_vars.passive_flags,
+        var_sharing=zone_vars.share_idx,
+        con_sharing=con_sharing,
+        active_var_idx=zone_vars.active_var_idx,
+        value_locations_global=zone_vars.value_locations_global,
+        variable_types_global=zone_vars.variable_types_global,
+        connectivity=conn,
     )
 
 
@@ -999,6 +1442,103 @@ def normalize_precision(
     return precision
 
 
+def poly_face_kwargs(
+    zone: TecplotPolyZoneReader, zone_map: Mapping[int, int] | None = None
+) -> dict[str, Any]:
+    """Return the ``write_poly_zone`` face arguments that reproduce *zone*.
+
+    The arrays are passed as the reader returns them (0-based). Boundary connection
+    arrays are included only when the zone has boundary faces. Callers that preserve
+    connectivity sharing should skip this and pass ``con_sharing``.
+
+    Args:
+        zone: Source poly zone.
+        zone_map: Source zone index to output zone index, for tools that renumber or
+            drop zones. The zones in ``boundary_connection_zones`` are renumbered with
+            it. A connection to a zone that is not in the map is dropped, and a
+            boundary face left with no connections becomes an ordinary face. ``None``
+            keeps the source numbering.
+    """
+    left = zone.face_left_elements
+    right = zone.face_right_elements
+    kwargs: dict[str, Any] = {
+        "face_nodes": zone.face_nodes,
+        "face_node_counts": zone.face_node_counts,
+        "face_left_elements": left,
+        "face_right_elements": right,
+    }
+    if not zone.num_boundary_faces:
+        return kwargs
+
+    counts = zone.boundary_connection_counts
+    elements = zone.boundary_connection_elements
+    zones = zone.boundary_connection_zones
+    if zone_map is not None:
+        left, right, counts, elements, zones = _remap_boundary_connections(
+            zone, zone_map
+        )
+        kwargs["face_left_elements"] = left
+        kwargs["face_right_elements"] = right
+    if counts.size:
+        kwargs["boundary_connection_counts"] = counts
+        kwargs["boundary_connection_elements"] = elements
+        kwargs["boundary_connection_zones"] = zones
+    return kwargs
+
+
+def _remap_boundary_connections(
+    zone: TecplotPolyZoneReader, zone_map: Mapping[int, int]
+) -> tuple[npt.NDArray, ...]:
+    """Renumber the zones a poly zone is connected to, see :func:`poly_face_kwargs`.
+
+    Returns:
+        ``(face_left_elements, face_right_elements, counts, elements, zones)``.
+
+    """
+    left = zone.face_left_elements
+    right = zone.face_right_elements
+    counts = zone.boundary_connection_counts
+    elements = zone.boundary_connection_elements
+    zones = zone.boundary_connection_zones
+
+    lookup = np.full(int(np.max(zones)) + 1, -1, dtype=np.int64)
+    for source, output in zone_map.items():
+        if 0 <= source < lookup.size:
+            lookup[source] = output
+    new_zones = lookup[zones]
+    keep = new_zones >= 0
+    if keep.all():
+        return left, right, counts, elements, new_zones
+
+    # Drop the connections to zones that are gone, then renumber the boundary faces
+    # that still have connections. A reference to boundary face b is -(b + 2).
+    owner = np.repeat(np.arange(counts.size), counts)
+    new_counts = np.bincount(owner[keep], minlength=counts.size)
+    alive = new_counts > 0
+    new_id = np.cumsum(alive) - 1
+    warnings.warn(
+        f"Zone '{zone.title}': dropped {int((~keep).sum())} boundary connection(s) "
+        f"to zones that are not in the output, and {int((~alive).sum())} boundary "
+        "face(s) with no connection left became ordinary faces.",
+        stacklevel=2,
+    )
+
+    def renumber(refs: npt.NDArray) -> npt.NDArray:
+        refs = refs.copy()
+        is_boundary = refs <= -2
+        old = -2 - refs[is_boundary]
+        refs[is_boundary] = np.where(alive[old], -2 - new_id[old], -1)
+        return refs
+
+    return (
+        renumber(left),
+        renumber(right),
+        new_counts[alive],
+        elements[keep],
+        new_zones[keep],
+    )
+
+
 class TecplotWriter(ABC):
     """Shared interface and lifecycle for all Tecplot file writers.
 
@@ -1054,6 +1594,10 @@ class TecplotWriter(ABC):
     @abstractmethod
     def _file_format(self) -> str:
         """Format tag for :class:`~tecio._meta.WriterMeta`, e.g. ``'szplt'``."""
+
+    def __dir__(self) -> list[str]:
+        """List only the public attributes and methods."""
+        return public_dir(self)
 
     # -- Context manager ---------------------------------------------------------------
 
@@ -1197,3 +1741,29 @@ class TecplotWriter(ABC):
         aux: dict[str, Any] | None = None,
     ) -> None:
         """Write a complete finite-element zone."""
+
+    @abstractmethod
+    def write_poly_zone(
+        self,
+        data: Sequence[npt.ArrayLike],
+        zone_type: ZoneType,
+        *,
+        face_nodes: npt.ArrayLike | None = None,
+        face_node_counts: npt.ArrayLike | None = None,
+        face_left_elements: npt.ArrayLike | None = None,
+        face_right_elements: npt.ArrayLike | None = None,
+        boundary_connection_counts: npt.ArrayLike | None = None,
+        boundary_connection_elements: npt.ArrayLike | None = None,
+        boundary_connection_zones: npt.ArrayLike | None = None,
+        title: str | None = None,
+        variables: list[str] | None = None,
+        value_locations: Sequence[ValueLocation] | None = None,
+        passive_vars: PassiveVarsSpec | None = None,
+        var_sharing: VarSharingSpec | None = None,
+        con_sharing: int | None = None,
+        solution_time: float = 0.0,
+        strand_id: int = 0,
+        aux: dict[str, Any] | None = None,
+        datapacking: DataPacking | str = DataPacking.BLOCK,
+    ) -> None:
+        """Write a complete FEPOLYGON or FEPOLYHEDRON zone."""

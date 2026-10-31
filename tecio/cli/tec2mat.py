@@ -65,8 +65,8 @@ Output structure:
           .solution_time          double
           .strand_id              double
           .I, .J, .K              double  (ordered zones)
-          .num_nodes              double  (finite-element zones)
-          .num_elements           double  (finite-element zones)
+          .num_nodes              double  (finite-element and poly zones)
+          .num_elements           double  (finite-element and poly zones)
           .var_1 ... .var_N       array   one field per dataset variable
           .var_status             cell    'active' | 'passive' | 'shared'
           .var_locations          cell    'NODAL' | 'CELL_CENTERED' | ''
@@ -83,6 +83,18 @@ Output structure:
                                           face_neighbor_mode
           .face_connections       array   flat, 1-based cell/zone numbers, FE only,
                                           present only alongside face_neighbor_mode
+          .num_faces              double  poly only
+          .face_node_counts       array   poly only, nodes per face
+          .face_nodes             array   poly only, flat 1-based node numbers
+          .face_left_elements     array   poly only, 1-based element, 0 = none,
+                                          -k = k-th boundary face
+          .face_right_elements    array   poly only, same convention as
+                                          face_left_elements
+          .boundary_connection_counts    array  poly only, per boundary face
+          .boundary_connection_elements  array  poly only, 1-based element numbers
+          .boundary_connection_zones     array  poly only, 1-based zone numbers
+          .face_map_shared_from   double  1-based source zone, poly only, present
+                                          only if this zone shares its face map
 
     Variable arrays are stored at their on-disk NumPy dtype, so single/double/integer
     precision is preserved. The real variable names are kept only in ``info.var_names``
@@ -161,9 +173,8 @@ Note:
     available memory and by the ~4 GB-per-variable ceiling of the MAT v5 format.
 
 Note:
-    FEPOLYGON and FEPOLYHEDRON zones are written with their variable data, but their
-    face-based connectivity cannot be read and the ``node_map`` field is omitted. A
-    warning is printed for each such zone.
+    FEPOLYGON and FEPOLYHEDRON zones export their face map instead of a ``node_map``,
+    as 1-based arrays (see the zone fields above).
 """
 
 from __future__ import annotations
@@ -179,24 +190,12 @@ import numpy as np
 from .. import (
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
     TecplotReader,
     TecplotZoneReader,
-    ZoneType,
 )
 from .. import open as tecio_open
 from .._writer import convert_face_connections_to_one_based
-
-# --------------------------------------------------------------------------------------
-# Constants
-# --------------------------------------------------------------------------------------
-
-#: Zone types whose connectivity is face-based and cannot be read; their
-#: node map is omitted from the output.
-_FE_POLY: frozenset[ZoneType] = frozenset({
-    ZoneType.FEPOLYGON,
-    ZoneType.FEPOLYHEDRON,
-})
-
 
 # --------------------------------------------------------------------------------------
 # Argument parsing
@@ -302,6 +301,31 @@ def _build_info_dict(reader: TecplotReader) -> dict[str, Any]:
     }
 
 
+def _add_poly_face_map(d: dict[str, Any], zone: TecplotPolyZoneReader) -> None:
+    """Add a poly zone's face map to *d* using MATLAB's 1-based numbering.
+
+    Nodes and elements are shifted to 1-based. Face left/right entries keep Tecplot's
+    on-disk convention: ``0`` for none and ``-k`` for the k-th boundary face.
+    """
+    d["num_faces"] = np.int64(zone.num_faces)
+    src = zone.shared_connectivity
+    if src is not None:
+        d["face_map_shared_from"] = np.int32(src + 1)
+        return
+
+    d["face_node_counts"] = np.asarray(zone.face_node_counts)
+    d["face_nodes"] = np.asarray(zone.face_nodes) + 1
+    # A uniform +1 maps -1 (none) to 0 and -(b + 2) to -(b + 1), the on-disk values.
+    d["face_left_elements"] = np.asarray(zone.face_left_elements) + 1
+    d["face_right_elements"] = np.asarray(zone.face_right_elements) + 1
+    if zone.num_boundary_faces > 0:
+        d["boundary_connection_counts"] = np.asarray(zone.boundary_connection_counts)
+        d["boundary_connection_elements"] = (
+            np.asarray(zone.boundary_connection_elements) + 1
+        )
+        d["boundary_connection_zones"] = np.asarray(zone.boundary_connection_zones) + 1
+
+
 def _zone_to_dict(zone: TecplotZoneReader, num_vars: int) -> dict[str, Any]:
     """Build one zone's struct for the output file.
 
@@ -343,7 +367,7 @@ def _zone_to_dict(zone: TecplotZoneReader, num_vars: int) -> dict[str, Any]:
         d["I"] = int(ni)
         d["J"] = int(nj)
         d["K"] = int(nk)
-    elif isinstance(zone, TecplotFEZoneReader):
+    elif isinstance(zone, (TecplotFEZoneReader, TecplotPolyZoneReader)):
         d["num_nodes"] = int(zone.num_nodes)
         d["num_elements"] = int(zone.num_elements)
 
@@ -394,14 +418,16 @@ def _zone_to_dict(zone: TecplotZoneReader, num_vars: int) -> dict[str, Any]:
     d["var_dtypes"] = np.array(dtypes, dtype=object)
     d["var_shared_from"] = shared_from
 
-    # Connectivity for simple FE zones only. Ordered zones have no node map, and poly
-    # zones expose none through the readers.
+    # Connectivity for simple FE zones. Ordered zones have no node map, and poly zones
+    # export a face map (below).
     #
     # A zone that shares connectivity is handled the same way as a shared variable
     # above: rather than duplicating the (potentially large) node map into every zone's
     # struct, store the 1-based source zone number so the MATLAB user can dereference
     # zone_<src>.node_map themselves.
-    if isinstance(zone, TecplotFEZoneReader) and zone.zone_type not in _FE_POLY:
+    if isinstance(zone, TecplotPolyZoneReader):
+        _add_poly_face_map(d, zone)
+    elif isinstance(zone, TecplotFEZoneReader):
         con_src = zone.shared_connectivity
         if con_src is not None:
             d["node_map_shared_from"] = np.int32(con_src + 1)
@@ -482,13 +508,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             mdict: dict[str, Any] = {"info": _build_info_dict(reader)}
 
             for i, zone in enumerate(reader.zones, start=1):
-                if zone.zone_type in _FE_POLY:
-                    print(
-                        f"Warning: zone {i} ('{zone.title}') is "
-                        f"{zone.zone_type.name}; its connectivity cannot be read "
-                        "and the node map will be omitted.",
-                        file=sys.stderr,
-                    )
                 mdict[f"zone_{i}"] = _zone_to_dict(zone, num_vars)
 
             scipy_io.savemat(

@@ -33,6 +33,19 @@ _TEC_EXECUTABLE_ALIASES = (
 _VERSION_REGEX = re.compile(r"(20\d{2})\s*[Rr]\s*(\d+)")
 
 
+def public_dir(obj: object) -> list[str]:
+    """Return ``dir(obj)`` without single underscore (private) names.
+
+    Dunder names are kept so that introspection tools keep working. Attribute access
+    is unaffected, the private names are only hidden from listings.
+    """
+    return [
+        name
+        for name in object.__dir__(obj)
+        if not name.startswith("_") or name.startswith("__")
+    ]
+
+
 def _run_which(cmd: str) -> str | None:
     """Run `which cmd` explicitly as a fallback."""
     try:
