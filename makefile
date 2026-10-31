@@ -1,5 +1,6 @@
 PYTHON ?= python3
 PACKAGE = tecio-python
+IMPORT = tecio
 
 .PHONY: help \
 	install uninstall venv \
@@ -71,7 +72,7 @@ test:
 
 # Run coverage report
 coverage:
-	pytest -q --cov=$(PACKAGE)  --cov-report=term; EXIT=$$?; \
+	pytest -q --cov=$(IMPORT)  --cov-report=term; EXIT=$$?; \
 	exit $$EXIT
 	@echo "✓ Tests complete"
 

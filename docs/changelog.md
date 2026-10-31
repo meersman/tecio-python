@@ -29,17 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `tecslice -t` now writes "anchor" zones for dropped sources to keep the
+  variables that are shared from them and every shared zone is renumbered.
+- `tecextract` and `tecmerge` now remap zones for poly boundary connections.
+- `tecmerge --merge-grid` no longer drops a zone whose only variables are grid
+  variables to preserve boundary connections.
 - `tecpolybconn142` wrapper argument types (boundary connection zones are
   INT32 values).
 - PLT v111 zone header: the extra INT32 follows the zone type.
-- The ParaView reader plugin now follows the 0-indexed API (variable
-  auxiliary data and connectivity were off by one, which made it fail on
-  every file).
-- The ParaView writer plugin could not be loaded by ParaView because a
-  `@dataclass` failed at import, and it lacked the `Write()` method and input
-  type that ParaView requires of a writer. Failures in the writer now report an
-  error to ParaView instead of success. Unnamed blocks are labeled
-  `Zone 0`, `Zone 1`, ... to match the 0-indexed API.
 
 ---
 

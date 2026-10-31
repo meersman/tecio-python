@@ -1441,24 +1441,101 @@ def normalize_precision(
     return precision
 
 
-def poly_face_kwargs(zone: TecplotPolyZoneReader) -> dict[str, Any]:
+def poly_face_kwargs(
+    zone: TecplotPolyZoneReader, zone_map: Mapping[int, int] | None = None
+) -> dict[str, Any]:
     """Return the ``write_poly_zone`` face arguments that reproduce *zone*.
 
-    The arrays are passed exactly as the reader returns them (0-based). Boundary
-    connection arrays are included only when the zone has boundary faces. Callers
-    that preserve connectivity sharing should skip this and pass ``con_sharing``.
+    The arrays are passed as the reader returns them (0-based). Boundary connection
+    arrays are included only when the zone has boundary faces. Callers that preserve
+    connectivity sharing should skip this and pass ``con_sharing``.
+
+    Args:
+        zone: Source poly zone.
+        zone_map: Source zone index to output zone index, for tools that renumber or
+            drop zones. The zones in ``boundary_connection_zones`` are renumbered with
+            it. A connection to a zone that is not in the map is dropped, and a
+            boundary face left with no connections becomes an ordinary face. ``None``
+            keeps the source numbering.
     """
+    left = zone.face_left_elements
+    right = zone.face_right_elements
     kwargs: dict[str, Any] = {
         "face_nodes": zone.face_nodes,
         "face_node_counts": zone.face_node_counts,
-        "face_left_elements": zone.face_left_elements,
-        "face_right_elements": zone.face_right_elements,
+        "face_left_elements": left,
+        "face_right_elements": right,
     }
-    if zone.num_boundary_faces:
-        kwargs["boundary_connection_counts"] = zone.boundary_connection_counts
-        kwargs["boundary_connection_elements"] = zone.boundary_connection_elements
-        kwargs["boundary_connection_zones"] = zone.boundary_connection_zones
+    if not zone.num_boundary_faces:
+        return kwargs
+
+    counts = zone.boundary_connection_counts
+    elements = zone.boundary_connection_elements
+    zones = zone.boundary_connection_zones
+    if zone_map is not None:
+        left, right, counts, elements, zones = _remap_boundary_connections(
+            zone, zone_map
+        )
+        kwargs["face_left_elements"] = left
+        kwargs["face_right_elements"] = right
+    if counts.size:
+        kwargs["boundary_connection_counts"] = counts
+        kwargs["boundary_connection_elements"] = elements
+        kwargs["boundary_connection_zones"] = zones
     return kwargs
+
+
+def _remap_boundary_connections(
+    zone: TecplotPolyZoneReader, zone_map: Mapping[int, int]
+) -> tuple[npt.NDArray, ...]:
+    """Renumber the zones a poly zone is connected to, see :func:`poly_face_kwargs`.
+
+    Returns:
+        ``(face_left_elements, face_right_elements, counts, elements, zones)``.
+
+    """
+    left = zone.face_left_elements
+    right = zone.face_right_elements
+    counts = zone.boundary_connection_counts
+    elements = zone.boundary_connection_elements
+    zones = zone.boundary_connection_zones
+
+    lookup = np.full(int(zones.max()) + 1, -1, dtype=np.int64)
+    for source, output in zone_map.items():
+        if 0 <= source < lookup.size:
+            lookup[source] = output
+    new_zones = lookup[zones]
+    keep = new_zones >= 0
+    if keep.all():
+        return left, right, counts, elements, new_zones
+
+    # Drop the connections to zones that are gone, then renumber the boundary faces
+    # that still have connections. A reference to boundary face b is -(b + 2).
+    owner = np.repeat(np.arange(counts.size), counts)
+    new_counts = np.bincount(owner[keep], minlength=counts.size)
+    alive = new_counts > 0
+    new_id = np.cumsum(alive) - 1
+    warnings.warn(
+        f"Zone '{zone.title}': dropped {int((~keep).sum())} boundary connection(s) "
+        f"to zones that are not in the output, and {int((~alive).sum())} boundary "
+        "face(s) with no connection left became ordinary faces.",
+        stacklevel=2,
+    )
+
+    def renumber(refs: npt.NDArray) -> npt.NDArray:
+        refs = refs.copy()
+        is_boundary = refs <= -2
+        old = -2 - refs[is_boundary]
+        refs[is_boundary] = np.where(alive[old], -2 - new_id[old], -1)
+        return refs
+
+    return (
+        renumber(left),
+        renumber(right),
+        new_counts[alive],
+        elements[keep],
+        new_zones[keep],
+    )
 
 
 class TecplotWriter(ABC):

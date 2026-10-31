@@ -142,6 +142,62 @@ def _write_synthetic_ijk(path: Path) -> None:
         )
 
 
+def _read_zones(path: Path) -> list[dict[str, Any]]:
+    """Read every zone of *path* into a plain dict for comparisons."""
+    zones: list[dict[str, Any]] = []
+    with tecio.open(str(path), "r") as r:
+        for zone in r.zones:
+            info: dict[str, Any] = {
+                "title": zone.title,
+                "poly": isinstance(zone, tecio.TecplotPolyZoneReader),
+                "zone_type": zone.zone_type,
+                "strand_id": zone.strand_id,
+                "solution_time": zone.solution_time,
+                "aux": dict(zone.auxdata.items()),
+                "variables": [
+                    (v.name, v.is_passive(), v.shared_zone, v.value_location)
+                    for v in zone.variables
+                ],
+                "data": {
+                    v.name: np.array(zone.get_array(v.name))
+                    for v in zone.variables
+                    if not v.is_passive() and zone.get_array(v.name) is not None
+                },
+            }
+            if info["poly"]:
+                info["shared_connectivity"] = zone.shared_connectivity
+                info["num_boundary_faces"] = zone.num_boundary_faces
+                for key in _FACE_KEYS + _BCONN_KEYS:
+                    info[key] = np.array(getattr(zone, key))
+            zones.append(info)
+    return zones
+
+
+def _assert_same_zones(
+    got: list[dict[str, Any]],
+    expected: list[dict[str, Any]],
+    *,
+    check_aux: bool = True,
+) -> None:
+    """Assert two zone lists from :func:`_read_zones` hold the same data."""
+    assert len(got) == len(expected)
+    for i, (g, e) in enumerate(zip(got, expected, strict=True)):
+        for key in ("title", "poly", "zone_type", "strand_id", "variables"):
+            assert g[key] == e[key], f"zone {i} {key}"
+        assert g["solution_time"] == pytest.approx(e["solution_time"])
+        if check_aux:
+            assert g["aux"] == e["aux"], f"zone {i} aux"
+        assert g["data"].keys() == e["data"].keys()
+        for name, values in e["data"].items():
+            np.testing.assert_allclose(g["data"][name], values, rtol=1e-6)
+        if e["poly"]:
+            assert g["shared_connectivity"] == e["shared_connectivity"]
+            assert g["num_boundary_faces"] == e["num_boundary_faces"]
+            # A zone sharing connectivity reads the face map of its source zone.
+            for key in _FACE_KEYS + _BCONN_KEYS:
+                np.testing.assert_array_equal(g[key], e[key], err_msg=f"zone {i} {key}")
+
+
 # --------------------------------------------------------------------------------------
 # Fixtures
 # --------------------------------------------------------------------------------------
@@ -2393,6 +2449,353 @@ class TestTecaux:
         dst = tmp_path / f"out{aux_path.suffix}"
         assert tecaux(["--strip", "-d", "X=1", "-o", str(dst), str(aux_path)]) == 1
         assert tecaux(["--export-json", "-z", "1", "X=1", str(aux_path)]) == 1
+
+
+# --------------------------------------------------------------------------------------
+# Poly zones Sphere.plt and Sphere.dat
+#
+# One FEPOLYHEDRON zone (5202 nodes, 1380 elements, 7238 faces) written by Tecplot, so
+# these tests run every tool on poly data that the tecio writer did not make.
+# --------------------------------------------------------------------------------------
+
+_POLY_FORMATS = ["plt", "dat"]
+_FACE_KEYS = (
+    "face_nodes",
+    "face_node_counts",
+    "face_left_elements",
+    "face_right_elements",
+)
+_BCONN_KEYS = (
+    "boundary_connection_counts",
+    "boundary_connection_elements",
+    "boundary_connection_zones",
+)
+_SPHERE_VARS = ["X", "Y", "Z", "Cycling"]
+_SPHERE_NODES, _SPHERE_ELEMS, _SPHERE_FACES, _SPHERE_FACE_NODES = (
+    5202,
+    1380,
+    7238,
+    35145,
+)
+
+# Each tool that rewrites a file, with the arguments that leave the data unchanged.
+# tecmerge records the source file and tecaux the aux item, so aux is not compared.
+_REWRITE_TOOLS: dict[str, tuple[Any, list[str], bool]] = {
+    "tecextract": (tecextract, [], True),
+    "tecfix": (tecfix, [], True),
+    "tecslice": (tecslice, [], True),
+    "tecscale": (tecscale, ["-v", "0", "-s", "1"], True),
+    "tecmerge": (tecmerge, [], False),
+    "tecaux": (tecaux, ["-d", "Key=Value"], False),
+}
+
+# Every tool that writes a file, with the arguments that leave the data unchanged, and
+# teconvert, which takes the format as a flag instead of through the extension.
+_SZPLT_TOOLS: dict[str, tuple[Any, list[str]]] = {
+    "teconvert": (teconvert, ["-szplt"]),
+    **{name: (main, extra) for name, (main, extra, _) in _REWRITE_TOOLS.items()},
+}
+
+
+@pytest.fixture(params=_POLY_FORMATS)
+def poly_fmt(request) -> str:
+    """Parametrize a test across the formats that can hold poly zones."""
+    return request.param
+
+
+@pytest.fixture
+def sphere_path(poly_fmt: str) -> Path:
+    """Yield the Sphere reference file for each format that can hold poly zones."""
+    path = _TEST_DIR / f"Sphere.{poly_fmt}"
+    if not path.exists():
+        pytest.skip(f"No Sphere fixture at {path}")
+    return path
+
+
+def _sphere_copy(sphere_path: Path, tmp_path: Path, name: str = "sphere") -> Path:
+    """Copy the Sphere file into *tmp_path*, for tools that write next to the input."""
+    dst = tmp_path / f"{name}{sphere_path.suffix}"
+    shutil.copy(sphere_path, dst)
+    return dst
+
+
+class TestCliPoly:
+    """Every tool on a polyhedral zone exported by Tecplot 360."""
+
+    @pytest.mark.parametrize("tool", list(_REWRITE_TOOLS))
+    @pytest.mark.parametrize("out_fmt", _POLY_FORMATS)
+    def test_rewrite_keeps_sphere(
+        self, tool: str, out_fmt: str, sphere_path: Path, tmp_path: Path
+    ) -> None:
+        """Each tool writes the same zone back, also when it changes the format."""
+        main, extra, check_aux = _REWRITE_TOOLS[tool]
+        dst = tmp_path / f"out.{out_fmt}"
+
+        assert main([*extra, "-o", str(dst), str(sphere_path)]) == 0
+
+        got, expected = _read_zones(dst), _read_zones(sphere_path)
+        _assert_same_zones(got, expected, check_aux=check_aux)
+        (zone,) = got
+        assert zone["zone_type"] == ZoneType.FEPOLYHEDRON
+        assert zone["face_nodes"].size == _SPHERE_FACE_NODES
+        assert zone["face_node_counts"].size == _SPHERE_FACES
+
+    @pytest.mark.parametrize("tool", list(_SZPLT_TOOLS))
+    def test_szplt_output_is_refused(
+        self, tool: str, sphere_path: Path, tmp_path: Path, capsys
+    ) -> None:
+        """SZPLT cannot hold poly zones: exit code 1, a clear message, no file."""
+        main, extra = _SZPLT_TOOLS[tool]
+        dst = tmp_path / "out.szplt"
+
+        assert main([*extra, "-o", str(dst), str(sphere_path)]) == 1
+
+        assert "SZPLT" in capsys.readouterr().err
+        assert not dst.exists()
+
+    def test_teconvert_between_formats(self, sphere_path: Path, tmp_path: Path) -> None:
+        """PLT to DAT and DAT to PLT keep the zone."""
+        flag = "-dat" if sphere_path.suffix == ".plt" else "-plt"
+        dst = tmp_path / f"out.{flag[1:]}"
+
+        assert teconvert([flag, "-o", str(dst), str(sphere_path)]) == 0
+
+        _assert_same_zones(_read_zones(dst), _read_zones(sphere_path))
+
+    def test_tecextract_zone_and_variables(
+        self, sphere_path: Path, tmp_path: Path
+    ) -> None:
+        """Extracting by zone and by variable name or index keeps the face map."""
+        expected = _read_zones(sphere_path)[0]
+        by_name = tmp_path / f"by_name{sphere_path.suffix}"
+        by_index = tmp_path / f"by_index{sphere_path.suffix}"
+
+        assert tecextract(["-z", "0", "-v", "X,Cycling", "-o", str(by_name),
+                           str(sphere_path)]) == 0  # fmt: skip
+        assert tecextract(["-v", "0,3", "-o", str(by_index), str(sphere_path)]) == 0
+
+        for dst in (by_name, by_index):
+            (zone,) = _read_zones(dst)
+            assert [v[0] for v in zone["variables"]] == ["X", "Cycling"]
+            for key in _FACE_KEYS:
+                np.testing.assert_array_equal(zone[key], expected[key])
+            np.testing.assert_allclose(zone["data"]["X"], expected["data"]["X"])
+            np.testing.assert_array_equal(zone["data"]["Cycling"], np.arange(1, 5203))
+
+    def test_tecscale_scales_variable(self, sphere_path: Path, tmp_path: Path) -> None:
+        """Only the scaled variable changes, the face map is untouched."""
+        expected = _read_zones(sphere_path)[0]
+        dst = tmp_path / f"scaled{sphere_path.suffix}"
+
+        assert tecscale(["-v", "Cycling", "-s", "2", "-o", str(dst),
+                         str(sphere_path)]) == 0  # fmt: skip
+
+        (zone,) = _read_zones(dst)
+        np.testing.assert_array_equal(zone["data"]["Cycling"], 2 * np.arange(1, 5203))
+        np.testing.assert_allclose(zone["data"]["Z"], expected["data"]["Z"])
+        for key in _FACE_KEYS:
+            np.testing.assert_array_equal(zone[key], expected[key])
+
+    def test_tecfix_dry_run_and_fix(self, sphere_path: Path, tmp_path: Path) -> None:
+        """tecfix finds nothing to fix in either mode."""
+        dst = tmp_path / f"fixed{sphere_path.suffix}"
+
+        assert tecfix(["--dry-run", str(sphere_path)]) == 0
+        assert tecfix(["-o", str(dst), str(sphere_path)]) == 0
+
+        assert dst.exists()
+        _assert_same_zones(_read_zones(dst), _read_zones(sphere_path))
+
+    def test_tecaux_adds_aux_at_every_level(
+        self, sphere_path: Path, tmp_path: Path
+    ) -> None:
+        """Dataset, zone and variable aux data are added and the face map is kept."""
+        dst = tmp_path / f"aux{sphere_path.suffix}"
+
+        assert tecaux([
+            *("-d", "Solver=MyCFD"),
+            *("-z", "0", "Description=Sphere"),
+            *("-v", "X", "Units=m"),
+            *("-o", str(dst)),
+            str(sphere_path),
+        ]) == 0  # fmt: skip
+
+        with tecio.open(str(dst), "r") as r:
+            assert dict(r.auxdata.items()) == {"Solver": "MyCFD"}
+            assert dict(r.zones[0].auxdata.items()) == {"Description": "Sphere"}
+            assert dict(r.get_var_auxdata(0).items()) == {"Units": "m"}
+        _assert_same_zones(_read_zones(dst), _read_zones(sphere_path), check_aux=False)
+
+    def test_tecaux_strip_and_export(self, sphere_path: Path, tmp_path: Path) -> None:
+        """Aux data added to the Sphere zone can be exported and stripped again."""
+        src = _sphere_copy(sphere_path, tmp_path)
+        tagged = tmp_path / f"tagged{sphere_path.suffix}"
+        stripped = tmp_path / f"stripped{sphere_path.suffix}"
+        assert tecaux(["-z", "0", "Description=Sphere", "-o", str(tagged),
+                       str(src)]) == 0  # fmt: skip
+
+        assert tecaux(["--strip", "--export-json", "-o", str(stripped),
+                       str(tagged)]) == 0  # fmt: skip
+
+        with open(tmp_path / "tagged_aux.json") as f:
+            assert json.load(f)["AUXZONE"] == {"0": {"Description": "Sphere"}}
+        with tecio.open(str(stripped), "r") as r:
+            assert dict(r.zones[0].auxdata.items()) == {}
+        _assert_same_zones(_read_zones(stripped), _read_zones(src))
+
+    def test_tecmerge_two_copies(self, sphere_path: Path, tmp_path: Path) -> None:
+        """Merging two files gives two zones, each with its own face map."""
+        second = _sphere_copy(sphere_path, tmp_path, "second")
+        dst = tmp_path / f"merged{sphere_path.suffix}"
+
+        assert tecmerge(["-o", str(dst), str(sphere_path), str(second)]) == 0
+
+        expected = _read_zones(sphere_path)[0]
+        zones = _read_zones(dst)
+        assert len(zones) == 2
+        for zone in zones:
+            assert zone["shared_connectivity"] is None
+            for key in _FACE_KEYS:
+                np.testing.assert_array_equal(zone[key], expected[key])
+            assert zone["aux"]["SourceFileName"].startswith(("Sphere", "second"))
+
+    def test_tecmerge_across_formats(self, tmp_path: Path) -> None:
+        """A PLT and a DAT file can be merged, and --merge-grid shares the grid.
+
+        The two files hold the same face map, so the second zone shares its
+        connectivity and its coordinates with the first.
+        """
+        plt, dat = _TEST_DIR / "Sphere.plt", _TEST_DIR / "Sphere.dat"
+        if not (plt.exists() and dat.exists()):
+            pytest.skip("Sphere.plt and Sphere.dat are both needed")
+        dst = tmp_path / "merged.plt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), str(plt), str(dat)]) == 0
+
+        first, second = _read_zones(dst)
+        assert first["shared_connectivity"] is None
+        assert second["shared_connectivity"] == 0
+        assert [v[2] for v in second["variables"]] == [0, 0, 0, None]
+        for key in _FACE_KEYS:
+            np.testing.assert_array_equal(second[key], first[key])
+        np.testing.assert_allclose(second["data"]["Cycling"], first["data"]["Cycling"])
+
+    def test_tecmerge_time_series_then_tecslice(
+        self, sphere_path: Path, tmp_path: Path
+    ) -> None:
+        """A merged transient series, with the grid shared, can be sliced in time.
+
+        Dropping the first step keeps it as a strand-0 anchor with only the variables
+        the later steps share from it, and the shares are renumbered.
+        """
+        copies = [_sphere_copy(sphere_path, tmp_path, f"step_{i}") for i in range(3)]
+        series = tmp_path / f"series{sphere_path.suffix}"
+        assert tecmerge([
+            *("--merge-grid", "--assign-time-strands"),
+            *("-s", "0", "-d", "1"),
+            *("-o", str(series)),
+            *map(str, copies),
+        ]) == 0  # fmt: skip
+        merged = _read_zones(series)
+        assert [z["solution_time"] for z in merged] == [0.0, 1.0, 2.0]
+        assert [z["shared_connectivity"] for z in merged] == [None, 0, 0]
+
+        later = tmp_path / f"later{sphere_path.suffix}"
+        assert tecslice(["-t", "1:", "-o", str(later), str(series)]) == 0
+
+        zones = _read_zones(later)
+        assert [z["solution_time"] for z in zones] == [0.0, 1.0, 2.0]
+        assert [z["strand_id"] for z in zones] == [0, 1, 1]  # step 0 is the anchor
+        assert [z["shared_connectivity"] for z in zones] == [None, 0, 0]
+        for zone in zones:
+            for key in _FACE_KEYS:
+                np.testing.assert_array_equal(zone[key], merged[0][key])
+        np.testing.assert_allclose(zones[1]["data"]["Cycling"], np.arange(1, 5203))
+
+        every_other = tmp_path / f"every_other{sphere_path.suffix}"
+        assert tecslice(["-t", "::2", "-o", str(every_other), str(series)]) == 0
+        zones = _read_zones(every_other)
+        assert [z["solution_time"] for z in zones] == [0.0, 2.0]
+        assert [z["shared_connectivity"] for z in zones] == [None, 0]
+
+    def test_tecslice_ijk_is_ignored(
+        self, sphere_path: Path, tmp_path: Path, capsys
+    ) -> None:
+        """Index slicing does not apply to poly zones: warn and copy the zone."""
+        dst = tmp_path / f"sliced{sphere_path.suffix}"
+
+        assert (
+            tecslice(["-i", "::2", "-j", "1:5", "-o", str(dst), str(sphere_path)]) == 0
+        )
+
+        assert "IJK slice ignored" in capsys.readouterr().err
+        _assert_same_zones(_read_zones(dst), _read_zones(sphere_path))
+
+    def test_tecstats_reports_each_variable(self, sphere_path: Path, capsys) -> None:
+        """tecstats lists the four variables with the range of Cycling."""
+        assert tecstats([str(sphere_path)]) == 0
+
+        out = capsys.readouterr().out
+        for name in _SPHERE_VARS:
+            assert name in out
+        row = next(line for line in out.splitlines() if "Cycling" in line)
+        assert "5202" in row
+        assert "2601.5" in row  # mean of 1..5202
+
+    def test_tecstats_csv(self, sphere_path: Path, tmp_path: Path) -> None:
+        """--csv writes one row per variable."""
+        src = _sphere_copy(sphere_path, tmp_path, "Sphere")
+
+        assert tecstats(["--csv", str(src)]) == 0
+
+        lines = (tmp_path / "Sphere_stats.csv").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == len(_SPHERE_VARS) + 1
+        assert [line.split(",")[3] for line in lines[1:]] == _SPHERE_VARS
+        cycling = lines[-1].split(",")
+        assert float(cycling[4]) == 1.0
+        assert float(cycling[5]) == 5202.0
+
+    def test_tecdump_prints_poly_zone(self, sphere_path: Path, capsys) -> None:
+        """tecdump reports the type and the node, element and face counts."""
+        assert tecdump([str(sphere_path)]) == 0
+
+        out = capsys.readouterr().out
+        assert "FEPOLYHEDRON" in out
+        for label, count in (
+            ("Num Nodes", _SPHERE_NODES),
+            ("Num Elements", _SPHERE_ELEMS),
+            ("Num Faces", _SPHERE_FACES),
+        ):
+            line = next(ln for ln in out.splitlines() if label in ln)
+            assert str(count) in line
+        assert "Num Boundary Faces   : 0" in out
+
+    def test_tec2mat_exports_face_map(self, sphere_path: Path, tmp_path: Path) -> None:
+        """The MATLAB struct holds the variables and the 1-based face map."""
+        dst = tmp_path / "sphere.mat"
+        expected = _read_zones(sphere_path)[0]
+
+        assert tec2mat(["-o", str(dst), str(sphere_path)]) == 0
+
+        zone = _struct(_load_mat(dst), "zone_1")
+        assert int(zone.num_nodes) == _SPHERE_NODES
+        assert int(zone.num_elements) == _SPHERE_ELEMS
+        assert int(zone.num_faces) == _SPHERE_FACES
+        np.testing.assert_array_equal(
+            zone.face_node_counts, expected["face_node_counts"]
+        )
+        np.testing.assert_array_equal(zone.face_nodes, expected["face_nodes"] + 1)
+        assert zone.face_nodes.min() == 1
+        assert zone.face_nodes.max() == _SPHERE_NODES
+        np.testing.assert_array_equal(
+            zone.face_left_elements, expected["face_left_elements"] + 1
+        )
+        np.testing.assert_array_equal(
+            zone.face_right_elements, expected["face_right_elements"] + 1
+        )
+        assert (zone.face_right_elements == 0).sum() == 330  # faces with one element
+        assert not hasattr(zone, "boundary_connection_counts")
+        np.testing.assert_array_equal(zone.var_4, np.arange(1, 5203))
 
 
 # --------------------------------------------------------------------------------------

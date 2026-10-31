@@ -22,7 +22,9 @@ subset for use with another tool in a single command.
 :Options:
     ``-z LIST``, ``--zones LIST``
         Comma-separated list of 0-based zone indices to extract (e.g. ``-z
-        0,2,4``). If omitted, all zones are written to the output.
+        0,2,4``). If omitted, all zones are written to the output. A poly zone loses its
+        boundary connections to zones that are not extracted, with a warning, and a
+        boundary face left with no connection becomes an ordinary face.
 
     ``-v LIST``, ``--variables LIST``
         Comma-separated list of 0-based variable indices or exact variable
@@ -395,6 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         continue
 
                     zt = zone.zone_type
+                    zones_before = writer.current_zone
 
                     # Build per-variable metadata for the requested subset.
                     data: list[np.ndarray] = []
@@ -447,6 +450,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         con_remapped = (
                             zone_index_map.get(con_src) if con_src is not None else None
                         )
+                        # Boundary connections follow the compacted zone numbering, a
+                        # zone may also be connected to itself.
+                        zone_map = {**zone_index_map, zone_num: writer.current_zone + 1}
                         writer.write_poly_zone(
                             zone_type=zt,
                             data=data,
@@ -454,7 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             **(
                                 {}
                                 if con_remapped is not None
-                                else poly_face_kwargs(zone)
+                                else poly_face_kwargs(zone, zone_map)
                             ),
                             **common_kw,
                         )
@@ -488,8 +494,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                     # Record where this source zone landed in the output, so a later
                     # zone sharing from it can point at the real (compacted) index
-                    # instead of falling back to independent data.
-                    zone_index_map[zone_num] = writer.current_zone
+                    # instead of falling back to independent data.  A zone with no
+                    # active data (every variable shared or passive) is skipped by the
+                    # writer and has no output index.
+                    if writer.current_zone > zones_before:
+                        zone_index_map[zone_num] = writer.current_zone
 
     except Exception as exc:  # noqa: BLE001
         print(f"Error: {exc}", file=sys.stderr)
