@@ -1,8 +1,8 @@
 # Contributing
 
-Thanks for your interest in contributing to tecio! This is one of many
-personal side projects, so while contributions are welcome, I may take some
-time to review PRs.
+Thanks for your interest in contributing to tecio-python! This is a
+single-author side project, so while contributions are welcome, I may take
+some time to review PRs.
 
 ## How to contribute
 
@@ -13,8 +13,7 @@ time to review PRs.
 
 ## Code quality
 
-All contributions must pass the following checks before a PR can be merged.
-You can run them locally with:
+The linting rules and unit test piplines can be run locally with
 
 ```bash
 make check   # runs ruff format, ruff lint, and ty typecheck
@@ -31,9 +30,10 @@ These same checks run automatically on every pull request via GitHub Actions.
 ## Development setup
 
 ```bash
-git clone https://github.com/meersman/tecio.git
-cd tecio
-make install-dev
+git clone https://github.com/meersman/tecio-python.git
+cd tecio-python
+make venv
+make install
 ```
 
 You will also need a Tecplot 360 installation or the TecIO shared library
