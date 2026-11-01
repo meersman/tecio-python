@@ -1,4 +1,4 @@
-# tecio
+# tecio-python
 
 A Python interface for reading and writing Tecplot data files.
 

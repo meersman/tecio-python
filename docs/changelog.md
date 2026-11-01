@@ -9,34 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+---
 
-- Polygon and polyhedron zones (FEPOLYGON and FEPOLYHEDRON) can be read and
-  written in PLT and DAT files. They are returned as the new
-  `TecplotPolyZoneReader`, a zone class separate from the ordered and FE
-  classes, with 0-based `face_nodes`, `face_node_counts`,
-  `face_left_elements`, `face_right_elements` and boundary connection arrays,
-  returned as stored on disk. New `write_poly_zone` writer method (BLOCK
-  packing only; SZPLT raises `NotImplementedError`). Connectivity sharing and
-  append mode work with poly zones. Every CLI tool that rewrites a file
-  (`teconvert`, `tecextract`, `tecfix`, `tecscale`, `tecaux`, `tecmerge` and
-  `tecslice`) now carries poly zones through, and exits with an error when
-  asked to write them to SZPLT.  `tecmerge --merge-grid` writes an identical
-  poly grid once and shares it across zones (for example transient steps),
-  matching on a hash of the full face map.  `tecdump` reports poly counts and
-  `tec2mat` exports a 1-based face map.  Legacy PLT v111 poly zones are
-  readable.
-
-### Fixed
-
-- `tecslice -t` now writes "anchor" zones for dropped sources to keep the
-  variables that are shared from them and every shared zone is renumbered.
-- `tecextract` and `tecmerge` now remap zones for poly boundary connections.
-- `tecmerge --merge-grid` no longer drops a zone whose only variables are grid
-  variables to preserve boundary connections.
-- `tecpolybconn142` wrapper argument types (boundary connection zones are
-  INT32 values).
-- PLT v111 zone header: the extra INT32 follows the zone type.
+```{include} changelog/v0.4.1.md
+```
 
 ---
 
@@ -100,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/meersman/tecio/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/meersman/tecio-python/compare/v0.4.1...HEAD
 
 ```{toctree}
 :hidden:

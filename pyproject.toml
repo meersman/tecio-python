@@ -30,11 +30,11 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/meersman/tecio"
-Documentation = "https://meersman.github.io/tecio/"
-Repository = "https://github.com/meersman/tecio"
-Issues = "https://github.com/meersman/tecio/issues"
-Changelog = "https://github.com/meersman/tecio/blob/main/docs/changelog.md"
+Homepage = "https://github.com/meersman/tecio-python"
+Documentation = "https://meersman.github.io/tecio-python/"
+Repository = "https://github.com/meersman/tecio-python"
+Issues = "https://github.com/meersman/tecio-python/issues"
+Changelog = "https://github.com/meersman/tecio-python/blob/main/docs/changelog.md"
 
 [project.scripts]
 tec2mat = "tecio.cli.tec2mat:main"
