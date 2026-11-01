@@ -101,6 +101,9 @@ def count_face_connections(flat: npt.NDArray, mode: FaceNeighborMode) -> int:
     :func:`~tecio.reshape_face_connections` does to parse them, just counting steps
     instead of collecting values.
 
+    Returns:
+        int: Number of face-neighbor connections.
+
     Raises:
         ValueError: If *flat*'s length doesn't cleanly divide for the one-to-one modes,
             or ends mid-record for the "many" modes, either way, this is a reliable
@@ -148,6 +151,9 @@ def validate_face_neighbor_sharing(
     between zones when the face-neighbor mode is global, only local modes support
     sharing (implicitly, along with connectivity itself, via con_sharing, there's no
     separate face-neighbor-sharing mechanism).
+
+    Raises:
+        ValueError: If the mode is global and *con_sharing* is set.
     """
     global_modes = (
         FaceNeighborMode.GLOBAL_ONE_TO_ONE,
@@ -276,6 +282,9 @@ def var_sharing_for_libtecio(share_idx: Sequence[int | None]) -> list[int]:
     Both the classic and SZL C APIs use ``0`` to mean "not shared" and a 1-based
     zone number otherwise, so ``None`` becomes ``0`` and every real zone index is
     shifted by one.
+
+    Returns:
+        list[int]: 1-based zone numbers, with ``0`` for "not shared".
     """
     return [0 if s is None else s + 1 for s in share_idx]
 
@@ -285,6 +294,9 @@ def zone_for_libtecio(zone: int | None) -> int:
 
     ``None`` (no sharing) becomes ``0``; a real 0-based zone index is shifted to
     the C API's 1-based zone number.
+
+    Returns:
+        int: 1-based zone number, or ``0`` for no sharing.
     """
     return 0 if zone is None else zone + 1
 
@@ -365,6 +377,9 @@ def resolve_passive_vars(
             names or all indices.
         dataset_variables: The full dataset variable name list.
 
+    Returns:
+        Sequence: One flag per dataset variable, ``True`` if passive.
+
     Raises:
         TypeError: *passive_keys* mixes names and indices.
     """
@@ -389,6 +404,9 @@ def resolve_var_sharing(
         dataset_variables: The full dataset variable name list.
         passive_vars: Already-resolved dense passive_vars list, checked against so no
             variable ends up both passive and shared.
+
+    Returns:
+        list: Source zone per dataset variable, ``None`` if not shared.
 
     Raises:
         TypeError: *sharing_map* mixes names and indices.
@@ -421,6 +439,10 @@ def _normalize_passive_and_sharing(
     arrays here for input to TecIO functions. The dense sharing array uses ``None`` for
     "not shared", since ``0`` is a real (0-based) zone index and can no longer double
     as a sentinel.
+
+    Returns:
+        tuple: Tuple of passive flags and source zones, each one entry per dataset
+            variable.
 
     Raises:
         TypeError: *passive_vars* is given but isn't a list/tuple/set, or *var_sharing*
@@ -1055,7 +1077,11 @@ class PreparedPolyZone:
 
 
 def _as_index_array(value: npt.ArrayLike, name: str) -> npt.NDArray:
-    """Return *value* as a flat integer array, without copying when possible."""
+    """Return *value* as a flat integer array, without copying when possible.
+
+    Raises:
+        ValueError: If *value* is not an integer array.
+    """
     arr = np.asarray(value)
     if arr.dtype.kind not in "iu":
         raise ValueError(f"{name} must be an integer array, got dtype {arr.dtype}.")
@@ -1074,6 +1100,13 @@ def _check_boundary_arrays(
 
     The Tecplot libraries do not bounds-check these, a bad zone or element index
     corrupts the file or crashes, so they are checked here.
+
+    Returns:
+        tuple: Tuple of counts, elements and zones as integer arrays, or ``(None, None,
+            None)`` if none are given.
+
+    Raises:
+        ValueError: If the arrays are incomplete, inconsistent or out of range.
     """
     given = [a is not None for a in (counts, elements, zones)]
     if not any(given):
@@ -1135,7 +1168,14 @@ def _check_poly_connectivity(
     boundary_connection_zones: npt.ArrayLike | None,
     meta: WriterMeta,
 ) -> _PolyConnectivity:
-    """Validate the face map of a poly zone that owns its connectivity."""
+    """Validate the face map of a poly zone that owns its connectivity.
+
+    Returns:
+        Validated sizes and arrays of the face map.
+
+    Raises:
+        ValueError: If the face map is incomplete, inconsistent or out of range.
+    """
     if face_nodes is None or face_left_elements is None or face_right_elements is None:
         raise ValueError(
             "face_nodes, face_left_elements and face_right_elements are required "
@@ -1226,7 +1266,15 @@ def _check_poly_connectivity(
 def _shared_poly_connectivity(
     zone_type: ZoneType, con_sharing: int, meta: WriterMeta
 ) -> _PolyConnectivity:
-    """Take the face-map sizes of a zone sharing connectivity from *con_sharing*."""
+    """Take the face-map sizes of a zone sharing connectivity from *con_sharing*.
+
+    Returns:
+        Sizes of the face map of the source zone.
+
+    Raises:
+        ValueError: If the source zone is missing, incompatible or has connected
+            boundary faces.
+    """
     src = meta.zone(con_sharing)
     if src is None or src.num_faces is None or src.num_nodes is None:
         raise ValueError(
@@ -1596,13 +1644,21 @@ class TecplotWriter(ABC):
         """Format tag for :class:`~tecio._meta.WriterMeta`, e.g. ``'szplt'``."""
 
     def __dir__(self) -> list[str]:
-        """List only the public attributes and methods."""
+        """List only the public attributes and methods.
+
+        Returns:
+            str: Names of the public attributes and methods, and the dunder names.
+        """
         return public_dir(self)
 
     # -- Context manager ---------------------------------------------------------------
 
     def __enter__(self) -> TecplotWriter:
-        """Support ``with`` statement, returns *self*."""
+        """Support ``with`` statement, returns *self*.
+
+        Returns:
+            TecplotWriter object when entering the context manager.
+        """
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -1622,7 +1678,11 @@ class TecplotWriter(ABC):
     # -- Validation --------------------------------------------------------------------
 
     def _check_variables(self) -> list[str]:
-        """Return the variable list, raising if the file has not been opened yet."""
+        """Return the variable list, raising if the file has not been opened yet.
+
+        Raises:
+            RuntimeError: If the variable names have not been set yet.
+        """
         if self.variables is None:
             raise RuntimeError(
                 "Attempted to access variable name list before they were set. "

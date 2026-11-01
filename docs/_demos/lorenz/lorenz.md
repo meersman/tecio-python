@@ -159,11 +159,11 @@ Variables `t` and `tau` are declared passive so no data array needs to be
 supplied for them:
 
 ```python
-szl.write_ijk_zone(
+szl.write_ordered_zone(
     title="Lorenz Attractor",
     variables=["x", "y", "z", "t", "tau"],
     data=[x, y, z],
-    passive_vars=[False, False, False, True, True],
+    passive_vars=["t", "tau"],
     strand_id=0,
 )
 ```
@@ -176,7 +176,7 @@ points, giving it dimensions $(i+1, 1, 1)$:
 
 ```python
 for i in range(0, n_steps, 10):
-    szl.write_ijk_zone(
+    szl.write_ordered_zone(
         title="Trajectory",
         variables=["x", "y", "z", "t", "tau"],
         data=[
@@ -204,11 +204,11 @@ time meaningless:
 
 ```python
 for i in range(0, n_steps, 10):
-    szl.write_ijk_zone(
+    szl.write_ordered_zone(
         title="Particle",
         variables=["x", "y", "z", "t", "tau"],
         data=[x[i : i + 1], y[i : i + 1], z[i : i + 1]],
-        passive_vars=[False, False, False, True, True],
+        passive_vars=["t", "tau"],
         strand_id=2,
         solution_time=i * dt,
     )

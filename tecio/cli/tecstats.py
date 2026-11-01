@@ -88,7 +88,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.tecstats.main as tecstats
+        from tecio.cli.tecstats import main as tecstats
 
         tecstats(["-z", "1", "-v", "2", "flow.szplt"])
 
@@ -370,7 +370,11 @@ def _csv_row(
     loc: str,
     note: str = "",
 ) -> dict[str, str | int | float]:
-    """Build one CSV row as a plain dict keyed on :data:`_CSV_FIELDNAMES`."""
+    """Build one CSV row as a plain dict keyed on :data:`_CSV_FIELDNAMES`.
+
+    Returns:
+        dict: The row, keyed by field name.
+    """
     return {
         "zone_num": zone_num,
         "zone_title": zone_title,

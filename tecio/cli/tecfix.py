@@ -61,7 +61,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.tecfix.main as tecfix
+        from tecio.cli.tecfix import main as tecfix
 
         tecfix(["flow.szplt", "--output", "clean.szplt"])
 

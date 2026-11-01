@@ -66,7 +66,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.teconvert.main as teconvert
+        from tecio.cli.teconvert import main as teconvert
 
         teconvert(["-dat", "-o", "flow.dat", "flow.szplt"])
 

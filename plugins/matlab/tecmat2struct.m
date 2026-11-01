@@ -18,24 +18,24 @@ function zones = tecmat2struct(d)
 %        has fields info, zone_1, zone_2, ...
 %
 % Returns:
-%     zones: 1 x info.num_zones struct array. Every element has the same
-%            fields, so this is a normal MATLAB struct array (zones(i),
-%            [zones.pressure], etc. all work):
-%       .title, .zone_type, .solution_time, .strand_id
-%       .I, .J, .K                     ordered zones; [] for FE zones
-%       .num_nodes, .num_elements      FE zones; [] for ordered zones
-%       .node_map                      FE zones (resolved through
-%                                       node_map_shared_from if the zone
-%                                       shares connectivity); [] otherwise
-%       .face_neighbor_mode, .num_face_connections, .face_connections
-%                                       FE zones with face-neighbor data;
-%                                       '' / [] / [] otherwise
-%       .<variable name>                one field per dataset variable
-%                                       whose real name is a valid MATLAB
-%                                       identifier (see isvarname). Passive
-%                                       in a zone -> []. Shared -> resolved
-%                                       to the source zone's data, so every
-%                                       zones(i) is self-contained.
+%     zones: A 1 x info.num_zones struct array with identical fields in every
+%            element, so zones(i) and [zones.<varname>] both work. Fields::
+%
+%             .title, .zone_type, .solution_time, .strand_id
+%             .I, .J, .K                  ordered zones; [] for FE zones
+%             .num_nodes, .num_elements   FE zones; [] for ordered zones
+%             .node_map                   FE zones (resolved through
+%                                         node_map_shared_from if the zone
+%                                         shares connectivity); [] otherwise
+%             .face_neighbor_mode, .num_face_connections, .face_connections
+%                                         FE zones with face-neighbor data;
+%                                         '' / [] / [] otherwise
+%             .<variable name>            one field per dataset variable
+%                                         whose real name is a valid MATLAB
+%                                         identifier (see isvarname). Passive
+%                                         in a zone -> []. Shared -> resolved
+%                                         to the source zone's data, so every
+%                                         zones(i) is self-contained.
 %
 % Notes:
 %  - A variable name that is not a valid MATLAB identifier is skipped with a

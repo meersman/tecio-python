@@ -1,6 +1,6 @@
 """Library of functions that create various data types for tecio tests."""
 
-# ruff: noqa: F403, F405, N802
+# ruff: noqa: F403, F405
 
 import numpy as np
 import numpy.typing as npt
@@ -38,6 +38,9 @@ def create_ordered(
          i=0  i=1   i=2
 
     Node ordering: i (x) varies fastest, then j (y), then k (z).
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, each of shape *ijk*.
     """
     x_ = np.linspace(0.0, ijk[0], ijk[0], dtype=np.float32)
     y_ = np.linspace(0.0, ijk[1], ijk[1], dtype=np.float32)
@@ -46,13 +49,16 @@ def create_ordered(
     return x, y, z
 
 
-def create_FE_lineseg() -> tuple[
+def create_fe_lineseg() -> tuple[
     npt.NDArray[np.float32], npt.NDArray[np.float32], npt.NDArray[np.int32]
 ]:
     """Create coordinates and nodemap for FELINESEG zone type.
 
     Node Map:
     [0] -- <C0> -- [1] -- <C1> -- [2]
+
+    Returns:
+        NumPy NDArrays for x and y coordinates and the node map.
     """
     # xy coords
     points = np.array([
@@ -70,7 +76,7 @@ def create_FE_lineseg() -> tuple[
     return x, y, nodes
 
 
-def create_FE_tri() -> tuple[
+def create_fe_tri() -> tuple[
     npt.NDArray[np.float32], npt.NDArray[np.float32], npt.NDArray[np.int32]
 ]:
     r"""Create coordinates and nodemap for FELTRIANGLE zone type.
@@ -81,6 +87,9 @@ def create_FE_tri() -> tuple[
     | \   |
     |C0 \ |
     0 --- 1
+
+    Returns:
+        NumPy NDArrays for x and y coordinates and the node map.
     """
     points = np.array([
         [0, 0],
@@ -98,7 +107,7 @@ def create_FE_tri() -> tuple[
     return x, y, nodes
 
 
-def create_FE_quad() -> tuple[
+def create_fe_quad() -> tuple[
     npt.NDArray[np.float32], npt.NDArray[np.float32], npt.NDArray[np.int32]
 ]:
     """Create coordinates and nodemap for FEQUADRILATERAL zone type.
@@ -107,6 +116,9 @@ def create_FE_quad() -> tuple[
     3 --- 4 --- 5  Cell 0: 0-1-4-3
     | C0  | C1  |  Cell 1: 1-2-5-4
     0 --- 1 --- 2
+
+    Returns:
+        NumPy NDArrays for x and y coordinates and the node map.
     """
     # Can create polygon from the same two FE tri cells above
     points = np.array([
@@ -127,7 +139,7 @@ def create_FE_quad() -> tuple[
     return x, y, nodes
 
 
-def create_FE_tet() -> tuple[
+def create_fe_tet() -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
@@ -150,6 +162,9 @@ def create_FE_tet() -> tuple[
 
     Cell 0: [0, 1, 2, 3]
     Cell 1: [0, 2, 1, 4]
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates and the node map.
     """
     points = np.array([
         [0.0, 0.0, 0.0],  # 0
@@ -169,7 +184,7 @@ def create_FE_tet() -> tuple[
     return x, y, z, nodes
 
 
-def create_FE_pyramid() -> tuple[
+def create_fe_pyramid() -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
@@ -179,6 +194,9 @@ def create_FE_pyramid() -> tuple[
 
     Node: Tecplot represents pyramids as degenerate bricks where nodes 4,5,6,7 are all
     the apex node repeated.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates and the node map.
 
     """
     points = np.array([
@@ -198,7 +216,7 @@ def create_FE_pyramid() -> tuple[
     return x, y, z, nodes
 
 
-def create_FE_prism() -> tuple[
+def create_fe_prism() -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
@@ -208,6 +226,9 @@ def create_FE_prism() -> tuple[
 
     Note: Represented as degenerate brick: bottom tri nodes 0,1,2 paired with
     top tri nodes 3,4,5 — each tri edge node repeated to fill 8-node brick.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates and the node map.
 
     """
     points = np.array([
@@ -228,7 +249,7 @@ def create_FE_prism() -> tuple[
     return x, y, z, nodes
 
 
-def create_FE_brick() -> tuple[
+def create_fe_brick() -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
@@ -252,6 +273,9 @@ def create_FE_brick() -> tuple[
     f3: n2-n3-n7-n6 back face (Jmax)
     f4: n0-n1-n2-n3 bottom face (Kmin)
     f5: n4-n5-n6-n7 top face (Kmax)
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the face node lists and the node map.
     """
     points = np.array([
         [0, 0, 0],  # 0
@@ -279,7 +303,7 @@ def create_FE_brick() -> tuple[
     return x, y, z, faces, nodes
 
 
-def create_FE_two_bricks() -> tuple[
+def create_fe_two_bricks() -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
@@ -295,6 +319,10 @@ def create_FE_two_bricks() -> tuple[
     | 3 ----|-2 ----|-8
     |/      |/      |/
     0 ----- 1 ----- 9
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the node map and the face neighbor
+        connections.
 
     Notes:
     - For the first FEBRICK cell shown above the faces are numbered
@@ -335,7 +363,7 @@ def create_FE_two_bricks() -> tuple[
     return x, y, z, nodes, face_neighbors
 
 
-def create_FE_mixed() -> tuple[
+def create_fe_mixed() -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
@@ -353,6 +381,10 @@ def create_FE_mixed() -> tuple[
         Cell 1: Pyramid   (5 nodes)
         Cell 2: Prism     (6 nodes)
         Cell 3: Hex       (8 nodes)
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the node map and the number of nodes
+        per element.
     """
     points = np.array(
         [
@@ -432,7 +464,12 @@ def _split_faces(
     npt.NDArray[np.int32],
     npt.NDArray[np.int32],
 ]:
-    """Split ``(nodes, left, right)`` rows into face_nodes, counts, left and right."""
+    """Split ``(nodes, left, right)`` rows into face_nodes, counts, left and right.
+
+    Returns:
+        NumPy NDArrays for face nodes, the node count per face, and the left and right
+        elements.
+    """
     face_nodes = np.concatenate([f[0] for f in faces])
     counts = np.array([len(f[0]) for f in faces])
     left = np.array([f[1] for f in faces])
@@ -463,6 +500,10 @@ def create_poly_octagon() -> tuple[
 
     Face i runs from node i to node i + 1 (F7 closes the loop from node 7 to node 0).
     The cell is on the left of every face and nothing is on the right.
+
+    Returns:
+        The x and y coordinates, the face nodes with shape ``(num_faces, 2)``, and the
+        left and right elements.
     """
     points = np.array([
         [0.25, 0],  # 0
@@ -512,6 +553,10 @@ def create_poly_two_cells() -> tuple[
              F0
     The pentagon has faces F0 to F4 and the triangle F1, F5 and F6. F1 is the only face
     with an element on both sides.
+
+    Returns:
+        NumPy NDArrays for x and y coordinates, the face nodes with shape ``(num_faces,
+        2)``, and the left and right elements.
     """
     points = np.array([
         [0, 0],  # 0
@@ -561,6 +606,10 @@ def create_poly_hanging_ladder() -> tuple[
 
     Column k spans x = k to k + 1 and the domain is 4 tall. Faces are listed cell by
     cell, so each face belongs to the first cell that uses it.
+
+    Returns:
+        NumPy NDArrays for x and y coordinates, the face nodes with shape ``(num_faces,
+        2)``, and the left and right elements.
     """
     points = np.array([
         [0, 0],  # 0
@@ -640,6 +689,10 @@ def create_poly_golden_spiral() -> tuple[
 
     Square k has area side(k)**2 with sides 1, 1, 2, 3, 5. Faces are listed cell by
     cell, so each face belongs to the first cell that uses it.
+
+    Returns:
+        NumPy NDArrays for x and y coordinates, the face nodes with shape ``(num_faces,
+        2)``, and the left and right elements.
     """
     points = np.array([
         [-3, -5],  # 0
@@ -703,6 +756,10 @@ def create_poly_bconn_fine() -> tuple[
 
     The left faces (F3, F6, F9 and F12) have no element on their right because the
     neighbors are in another zone, which only the coarse zone references.
+
+    Returns:
+        NumPy NDArrays for x and y coordinates, the face nodes with shape ``(num_faces,
+        2)``, and the left and right elements.
     """
     points = np.array([
         [1, 0],  # 0
@@ -766,6 +823,11 @@ def create_poly_bconn_coarse() -> tuple[
 
     Returns the usual polygon arrays followed by bconn_counts, bconn_elems and
     bconn_zones.
+
+    Returns:
+        NumPy NDArrays for x and y coordinates, the face nodes with shape ``(num_faces,
+        2)``, the left and right elements, and the boundary connection counts, elements
+        and zones.
     """
     points = np.array([
         [0, 0],  # 0
@@ -824,6 +886,10 @@ def create_polyhedron_cube() -> tuple[
 
     The six faces are F0 -x, F1 +x, F2 -y, F3 +y, F4 -z and F5 +z. The cell E0 is on
     the left of every face and nothing is on the right.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the face nodes, the node count per
+        face, and the left and right elements.
     """
     points = np.array([
         [0, 0, 0],  # 0
@@ -878,6 +944,10 @@ def create_polyhedron_cube_pair() -> tuple[
 
     The faces of each cube are numbered -x, +x, -y, +y, -z, +z and the shared face is
     the +z face of E0 and the -z face of E1, so E1 has no -z face of its own.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the face nodes, the node count per
+        face, and the left and right elements.
     """
     points = np.array([
         [0, 0, 0],  # 0
@@ -957,6 +1027,10 @@ def create_polyhedron_mixed_faces() -> tuple[
          (Bottom, z = 0)            (Top, z = 1)
     Faces: F0 to F5 cube, F6 to F9 pyramid, F10 to F13 prism, F14 to F21 hexagonal
     prism (F14 bottom, F15 top, then six sides).
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the face nodes, the node count per
+        face, and the left and right elements.
     """
     h = np.sqrt(3) / 4  # half the hexagon height
     points = np.array([
@@ -1041,6 +1115,10 @@ def create_polyhedron_hanging_columns() -> tuple[
 
     Faces are listed cell by cell, so each face belongs to the first cell that uses it.
     E0 has 9 faces: F0 and F5 to F8 on the outside and F1 to F4 shared with E1 to E4.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the face nodes, the node count per
+        face, and the left and right elements.
     """
     points = np.array([
         [0, 0, 0],  # 0
@@ -1124,6 +1202,10 @@ def create_polyhedron_bconn_fine() -> tuple[
 
     The -x faces (F0, F6, F11 and F16) have no element on their right because their
     neighbor is in another zone, which only the coarse zone references.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the face nodes, the node count per
+        face, and the left and right elements.
     """
     points = np.array([
         [2, 0, 0],  # 0
@@ -1205,6 +1287,11 @@ def create_polyhedron_bconn_coarse() -> tuple[
 
     Returns the usual polyhedron arrays followed by bconn_counts, bconn_elems and
     bconn_zones.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the face nodes, the node count per
+        face, the left and right elements, and the boundary connection counts, elements
+        and zones.
     """
     points = np.array([
         [0, 0, 0],  # 0

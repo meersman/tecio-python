@@ -12,7 +12,7 @@ html:
 	@echo "Build finished. HTML pages are in $(BUILDDIR)/html."
 
 clean:
-	rm -rf $(BUILDDIR) _autosummary/ api/cli/ api/readers/ api/writers
+	rm -rf $(BUILDDIR) _autosummary/ api/cli/ api/readers/ api/writers plugins/reader/ plugins/writer/
 
 help:
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)

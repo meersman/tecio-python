@@ -160,7 +160,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.tecaux.main as tecaux
+        from tecio.cli.tecaux import main as tecaux
 
         tecaux(["-d", "Solver=MyCFD", "flow.szplt"])
 

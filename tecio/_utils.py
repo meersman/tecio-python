@@ -47,7 +47,11 @@ def public_dir(obj: object) -> list[str]:
 
 
 def _run_which(cmd: str) -> str | None:
-    """Run `which cmd` explicitly as a fallback."""
+    """Run `which cmd` explicitly as a fallback.
+
+    Returns:
+        str: Path of the executable, or ``None`` if it is not found.
+    """
     try:
         proc = subprocess.run(
             ["which", cmd],
@@ -64,7 +68,14 @@ def _run_which(cmd: str) -> str | None:
 
 
 def _find_tec_executable() -> str:
-    """Locate Tecplot executable using multiple strategies."""
+    """Locate Tecplot executable using multiple strategies.
+
+    Returns:
+        str: Resolved path of the Tecplot executable.
+
+    Raises:
+        TecplotNotFoundError: If no Tecplot executable is found.
+    """
     # 1. shutil.which
     for name in _TEC_EXECUTABLE_ALIASES:
         exe = shutil.which(name)
@@ -118,7 +129,11 @@ def _find_tec_executable() -> str:
 
 
 def _extract_version_from_path(path: str) -> str | None:
-    """Extract Tecplot version YYYYR# from a filesystem path."""
+    """Extract Tecplot version YYYYR# from a filesystem path.
+
+    Returns:
+        str: Tecplot install version string, or ``None`` if the path has no version.
+    """
     match = _VERSION_REGEX.search(path)
     if match:
         year, release = match.groups()
@@ -127,7 +142,11 @@ def _extract_version_from_path(path: str) -> str | None:
 
 
 def _extract_version_from_executable(exe_path: str) -> str | None:
-    """Ask Tecplot executable for its version."""
+    """Ask Tecplot executable for its version.
+
+    Returns:
+        str: Tecplot install version string, or ``None`` if it cannot be determined.
+    """
     try:
         proc = subprocess.run(
             [exe_path, "-v"],
@@ -157,6 +176,12 @@ def get_tec_bin() -> str:
 
     - macOS: Contents/Frameworks
     - Linux: directory containing the executable
+
+    Returns:
+        str: Path of the bin directory.
+
+    Raises:
+        TecplotNotFoundError: If the application or its directories are not found.
     """
     exe = get_tec_exe()
 
@@ -196,6 +221,12 @@ def get_tecio_lib() -> str:
     1. TECIO_LIB environment variable
     2. Local project build directories (CI/dev)
     3. Installed Tecplot distribution
+
+    Returns:
+        str: Path of the shared library.
+
+    Raises:
+        TecplotNotFoundError: If the library cannot be found.
     """
     libname = "libtecio.dylib" if platform.system() == "Darwin" else "libtecio.so"
 
@@ -314,6 +345,9 @@ def requires_symbol(
                       here directly, so this stays free of any dependency
                       on the module defining that exception (e.g.
                       :mod:`tecio.libtecio`, which imports this function).
+
+    Returns:
+        Callable: Decorator function.
     """
 
     def decorator(func: _F) -> _F:
@@ -346,7 +380,14 @@ def requires_symbol(
 
 
 def get_tec_version() -> str:
-    """Return Tecplot version formatted as YYYYR#."""
+    """Return Tecplot version formatted as YYYYR#.
+
+    Returns:
+        str: Tecplot install version string, for example ``"2025R1"``.
+
+    Raises:
+        TecplotNotFoundError: If the version cannot be determined.
+    """
     exe = get_tec_exe()
 
     # 1. From executable path
@@ -376,7 +417,16 @@ def convert_to_szl(
     input_path: str | os.PathLike,
     output_path: str | os.PathLike | None = None,
 ) -> Path:
-    """Convert a Tecplot data file to SZL (``.szplt``) format from the command line."""
+    """Convert a Tecplot data file to SZL (``.szplt``) format from the command line.
+
+    Returns:
+        Path of the converted file.
+
+    Raises:
+        FileNotFoundError: If *input_path* does not exist.
+        TecplotConversionError: If Tecplot fails to launch, fails, or does not create
+            the file.
+    """
     input_path = Path(input_path).resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"Input file not found: {input_path}")

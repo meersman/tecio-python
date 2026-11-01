@@ -167,12 +167,20 @@ def convert_face_connections_to_zero_based(
 
 
 def _immutable_setattr(instance: object, name: str, value: object) -> None:
-    """Raise, used as every reader class's ``__setattr__``."""
+    """Raise, used as every reader class's ``__setattr__``.
+
+    Raises:
+        AttributeError: Always raised when called to prevent user-added or modified attributes.
+    """
     raise AttributeError(f"{type(instance).__name__} instances are immutable")
 
 
 def _immutable_delattr(instance: object, name: str) -> None:
-    """Raise, used as every reader class's ``__delattr__``."""
+    """Raise, used as every reader class's ``__delattr__``.
+
+    Raises:
+        AttributeError: Always raised when called to prevent user-removed attributes.
+    """
     raise AttributeError(f"{type(instance).__name__} instances are immutable")
 
 
@@ -376,6 +384,9 @@ class TecplotVariableReader(ABC):
 
         SZL overrides this with the dataset-level enabled flag it actually
         stores; PLT and DAT have no such flag and use this default.
+
+        Returns:
+            bool: ``True`` for an active variable.
         """
         return not self.is_passive()
 
@@ -462,7 +473,11 @@ class TecplotZoneReader(ABC):
     __delattr__ = _immutable_delattr
 
     def __dir__(self) -> list[str]:  # pragma: no cover
-        """List only the public attributes and methods."""
+        """List only the public attributes and methods.
+
+        Returns:
+            list[str]: Names of the public attributes and methods, and the dunder names.
+        """
         return public_dir(self)
 
     def __repr__(self) -> str:  # pragma: no cover
@@ -513,6 +528,10 @@ class TecplotZoneReader(ABC):
         """True unless the zone reports itself disabled.
 
         Only SZL can report False here; PLT and DAT have no such flag.
+
+        Returns:
+            bool: ``True`` whenever called in the base class. SZL may report ``False``,
+                  but all other file formats will report ``True``.
         """
         return True
 
@@ -857,6 +876,10 @@ class TecplotFEZoneReader(TecplotZoneReader):
         connections themselves. Default: None (not implemented for this
         format). A format that overrides this to return real data must
         also override :meth:`_load_face_connections`.
+
+        Returns:
+            tuple: Tuple of the neighbor mode, number of connections and completeness
+                   flag, or ``None`` if the format does not store them.
         """
         return None
 

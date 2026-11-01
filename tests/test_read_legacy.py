@@ -39,24 +39,40 @@ _BYTE_ORDER = ">"  # arbitrary; the reader auto-detects either order
 
 
 def _s(text: str) -> bytes:
-    """Encode a v75 string: one INT32 per character, null-terminated."""
+    """Encode a v75 string: one INT32 per character, null-terminated.
+
+    Returns:
+        The encoded bytes.
+    """
     return b"".join(struct.pack(f"{_BYTE_ORDER}i", ord(c)) for c in text) + struct.pack(
         f"{_BYTE_ORDER}i", 0
     )
 
 
 def _i(value: int) -> bytes:
-    """Encode a single INT32."""
+    """Encode a single INT32.
+
+    Returns:
+        The encoded bytes.
+    """
     return struct.pack(f"{_BYTE_ORDER}i", value)
 
 
 def _f32(value: float) -> bytes:
-    """Encode a single FLOAT32."""
+    """Encode a single FLOAT32.
+
+    Returns:
+        The encoded bytes.
+    """
     return struct.pack(f"{_BYTE_ORDER}f", value)
 
 
 def _header_prelude(title: str, var_names: list[str]) -> bytes:
-    """Magic, byte-order probe, title, and variable names."""
+    """Magic, byte-order probe, title, and variable names.
+
+    Returns:
+        The encoded bytes.
+    """
     out = b"#!TDV75 " + _i(1) + _s(title) + _i(len(var_names))
     for name in var_names:
         out += _s(name)
@@ -64,7 +80,11 @@ def _header_prelude(title: str, var_names: list[str]) -> bytes:
 
 
 def _zone_header(name: str, fmt: int, imax: int, jmax: int, kmax: int) -> bytes:
-    """One v75 zone-header record, including its own ``299.0`` marker."""
+    """One v75 zone-header record, including its own ``299.0`` marker.
+
+    Returns:
+        The encoded bytes.
+    """
     return _f32(299.0) + _s(name) + _i(fmt) + _i(-1) + _i(imax) + _i(jmax) + _i(kmax)
 
 
@@ -74,7 +94,11 @@ def _zone_data_block(
     var_formats: list[int],
     var_blocks: list[bytes],
 ) -> bytes:
-    """One v75 BLOCK/ORDERED data record (no connectivity): the common prefix."""
+    """One v75 BLOCK/ORDERED data record (no connectivity): the common prefix.
+
+    Returns:
+        The encoded bytes.
+    """
     out = _f32(299.0)
     out += _i(len(repeat_var_nums))
     for v in repeat_var_nums:
@@ -88,7 +112,11 @@ def _zone_data_block(
 
 
 def _pack_values(rows: list[list[float]], *, point: bool, double: bool) -> bytes:
-    """Pack ``rows[node][var]`` as one POINT-interleaved or BLOCK-per-variable run."""
+    """Pack ``rows[node][var]`` as one POINT-interleaved or BLOCK-per-variable run.
+
+    Returns:
+        The packed bytes.
+    """
     code = "d" if double else "f"
     n_vars = len(rows[0])
     order = (
@@ -114,6 +142,9 @@ def _zone_data_record(
     ``rows`` always holds every variable; the 1-based variable numbers in
     ``repeat`` are declared as repeated from the previous zone and their values
     are not written (in POINT packing they are dropped from every row).
+
+    Returns:
+        The encoded bytes.
     """
     data = _f32(299.0) + _i(len(repeat)) + b"".join(_i(v) for v in repeat)
     data += _i(2 if double else 1) * n_vars
@@ -138,7 +169,11 @@ def _single_zone_file(
     point: bool,
     double: bool,
 ) -> bytes:
-    """One zone, no sharing: prelude, header, data record, optional connectivity."""
+    """One zone, no sharing: prelude, header, data record, optional connectivity.
+
+    Returns:
+        The file contents as bytes.
+    """
     data = _header_prelude("Test", var_names) + zone_header + _f32(357.0)
     return data + _zone_data_record(
         len(var_names), rows, connectivity, point=point, double=double
@@ -390,7 +425,11 @@ _DEGENERATE_BRICK_CELLS = [
 
 
 def degenerate_brick_file(*, point: bool, double: bool) -> bytes:
-    """A one-zone FEBRICK file holding the four cells above (X, Y, Z, P)."""
+    """A one-zone FEBRICK file holding the four cells above (X, Y, Z, P).
+
+    Returns:
+        The file contents as bytes.
+    """
     rows = [[*xyz, float(i + 1)] for i, xyz in enumerate(_DEGENERATE_BRICK_NODES)]
     header = _zone_header(
         "Mixed", fmt=3 if point else 2, imax=len(rows), jmax=4, kmax=3
@@ -449,7 +488,11 @@ _TRI_ROWS = [[0.0, 2.0, 50.0], [1.0, 2.0, 60.0], [0.0, 3.0, 70.0]]
 
 
 def lineseg_then_triangle_file(*, point: bool, double: bool) -> bytes:
-    """Zone 1: FELINESEG chain (KMax 4). Zone 2: one FETRIANGLE."""
+    """Zone 1: FELINESEG chain (KMax 4). Zone 2: one FETRIANGLE.
+
+    Returns:
+        The file contents as bytes.
+    """
     fmt = 3 if point else 2
     data = _header_prelude("Lines", ["X", "Y", "T"])
     data += _zone_header("Chain", fmt=fmt, imax=4, jmax=3, kmax=4)
@@ -572,6 +615,9 @@ def static_grid_file(
 
     T is different in every zone: ``100 * zone + node`` (both 1-based). Zones 3
     and 4 repeat variables from a zone that itself repeats them (a chain).
+
+    Returns:
+        The file contents as bytes.
     """
     fmt = 3 if point else 2
     data = _header_prelude("Static grid", var_order)

@@ -69,14 +69,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 from create_test_data import (
-    create_FE_brick,
-    create_FE_lineseg,
-    create_FE_prism,
-    create_FE_pyramid,
-    create_FE_quad,
-    create_FE_tet,
-    create_FE_tri,
-    create_FE_two_bricks,
+    create_fe_brick,
+    create_fe_lineseg,
+    create_fe_prism,
+    create_fe_pyramid,
+    create_fe_quad,
+    create_fe_tet,
+    create_fe_tri,
+    create_fe_two_bricks,
     create_ordered,
     create_poly_bconn_coarse,
     create_poly_bconn_fine,
@@ -121,12 +121,20 @@ _EXTENSIONS: dict[str, str] = {"szl": "szplt", "plt": "plt", "dat": "dat"}
 
 @pytest.fixture(params=FORMATS)
 def fmt(request) -> str:
-    """Parametrize a test across every writer format (szl, plt, dat)."""
+    """Parametrize a test across every writer format (szl, plt, dat).
+
+    Returns:
+        The format name.
+    """
     return request.param
 
 
 def _path(output_path: Callable, fmt: str, name: str):
-    """Build an output path with the extension for *fmt*."""
+    """Build an output path with the extension for *fmt*.
+
+    Returns:
+        Output path string.
+    """
     return output_path(f"{name}.{_EXTENSIONS[fmt]}")
 
 
@@ -700,7 +708,7 @@ class TestWriteFEZone:
 
     def test_write_fe_lineseg(self, fmt: str, output_path: Callable) -> None:
         """FELINESEG -- two-node line segment elements."""
-        x, y, nodes = create_FE_lineseg()
+        x, y, nodes = create_fe_lineseg()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         c = np.sin(2 * np.pi * x).astype(np.float64)
@@ -726,7 +734,7 @@ class TestWriteFEZone:
 
     def test_write_fe_tri(self, fmt: str, output_path: Callable) -> None:
         """FETRIANGLE -- three-node triangular elements, mixed dtypes."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         x = x.astype(np.float32)
         y = y.astype(np.float64)
         c = (scalar_field(x, y) * 1000).astype(np.int32)
@@ -755,7 +763,7 @@ class TestWriteFEZone:
 
     def test_write_fe_quad(self, fmt: str, output_path: Callable) -> None:
         """FEQUADRILATERAL -- four-node quadrilateral elements."""
-        x, y, nodes = create_FE_quad()
+        x, y, nodes = create_fe_quad()
         x = x.astype(np.float64)
         y = y.astype(np.float64)
         c = scalar_field(x, y).astype(np.float32)
@@ -781,7 +789,7 @@ class TestWriteFEZone:
 
     def test_write_fe_tet(self, fmt: str, output_path: Callable) -> None:
         """FETETRAHEDRON -- four-node tetrahedral elements (3-D volume mesh)."""
-        x, y, z, nodes = create_FE_tet()
+        x, y, z, nodes = create_fe_tet()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         z = z.astype(np.float32)
@@ -808,7 +816,7 @@ class TestWriteFEZone:
 
     def test_write_fe_pyramid(self, fmt: str, output_path: Callable) -> None:
         """Pyramid as a degenerate FEBRICK (nodes 5-8 collapsed to the apex)."""
-        x, y, z, nodes = create_FE_pyramid()
+        x, y, z, nodes = create_fe_pyramid()
         x = x.astype(np.float32)
         y = y.astype(np.float64)
         z = z.astype(np.float32)
@@ -833,7 +841,7 @@ class TestWriteFEZone:
 
     def test_write_fe_prism(self, fmt: str, output_path: Callable) -> None:
         """Triangular prism as a degenerate FEBRICK (repeated edge nodes)."""
-        x, y, z, nodes = create_FE_prism()
+        x, y, z, nodes = create_fe_prism()
         x = x.astype(np.float32)
         y = y.astype(np.float64)
         z = z.astype(np.float64)
@@ -857,7 +865,7 @@ class TestWriteFEZone:
 
     def test_write_fe_brick(self, fmt: str, output_path: Callable) -> None:
         """FEBRICK -- standard 8-node hexahedral elements."""
-        x, y, z, _faces, nodes = create_FE_brick()
+        x, y, z, _faces, nodes = create_fe_brick()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         z = z.astype(np.float64)
@@ -889,7 +897,7 @@ class TestWriteFEZone:
         SZL specifically raises NotImplementedError instead of writing (likely a bug in
         the TecIO C library)
         """
-        x, y, z, nodes, face_neighbors = create_FE_two_bricks()
+        x, y, z, nodes, face_neighbors = create_fe_two_bricks()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         z = z.astype(np.float32)
@@ -947,7 +955,7 @@ class TestWriteFEZone:
         self, fmt: str, output_path: Callable
     ) -> None:
         """face_neighbor_mode given without face_neighbors is a mistake, raises."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
 
         path = _path(output_path, fmt, "write_fe_face_neighbor_mode_only")
         w = tecio.open(str(path), "w")
@@ -979,7 +987,7 @@ class TestWriteFEZone:
 
         SZL is broken and raises NotImplementedError on the very first write_fe_zone.
         """
-        x, y, z, nodes, face_neighbors = create_FE_two_bricks()
+        x, y, z, nodes, face_neighbors = create_fe_two_bricks()
 
         path = _path(output_path, fmt, "write_fe_face_neighbors_shared")
 
@@ -1043,7 +1051,7 @@ class TestWriteFEZone:
         Per the classic API's own documented constraint: connectivity (and
         any face-neighbor data with it) can only be shared for local modes.
         """
-        x, y, z, nodes, face_neighbors = create_FE_two_bricks()
+        x, y, z, nodes, face_neighbors = create_fe_two_bricks()
 
         path = _path(output_path, fmt, "write_fe_face_neighbors_global_shared")
         w = tecio.open(str(path), "w")
@@ -1085,7 +1093,7 @@ class TestWriteFEZone:
         match: str,
     ) -> None:
         """Structurally invalid cell/face references raise, not silently written."""
-        x, y, z, nodes, _ = create_FE_two_bricks()
+        x, y, z, nodes, _ = create_fe_two_bricks()
 
         path = _path(output_path, fmt, "write_fe_face_neighbors_bad_index")
         w = tecio.open(str(path), "w")
@@ -1121,7 +1129,7 @@ class TestWriteFEZone:
         case cleanly, confirming the degeneracy handling isn't what's
         broken, it's specifically the known SZL library limitation.
         """
-        x, y, nodes = create_FE_quad()
+        x, y, nodes = create_fe_quad()
         # Degenerate cell 0: repeat its last node, mimicking a triangle
         # written as a quad, exactly how the reference file above was
         # constructed (repeat the last node_map column).
@@ -1170,7 +1178,7 @@ class TestWriteFEZone:
 
     def test_write_fe_passive_variable(self, fmt: str, output_path: Callable) -> None:
         """Passive variable in an FE zone -- identical behavior to ordered zones."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         x = x.astype(np.float32)
         c = scalar_field(x, y).astype(np.float64)
 
@@ -1199,7 +1207,7 @@ class TestWriteFEZone:
         - ``shared_connectivity`` and shared-variable forwarding are
           consistent across all three readers
         """
-        x, y, z, nodes = create_FE_tet()
+        x, y, z, nodes = create_fe_tet()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         z = z.astype(np.float32)
@@ -1244,7 +1252,7 @@ class TestWriteFEZone:
         self, fmt: str, output_path: Callable
     ) -> None:
         """Too few data arrays for active variables raises ValueError."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         path = _path(output_path, fmt, "write_fe_var_count_mismatch")
 
         with pytest.raises(ValueError, match="[Ee]xpected"):
@@ -1257,7 +1265,7 @@ class TestWriteFEZone:
         self, fmt: str, output_path: Callable
     ) -> None:
         """Nodal array shorter than num_nodes raises ValueError."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         path = _path(output_path, fmt, "write_fe_array_length_mismatch")
 
         with pytest.raises(ValueError), tecio.open(str(path), "w") as w:
@@ -1278,7 +1286,7 @@ class TestWriteFEZone:
           ``var_sharing={"x": 0, "y": 0, "z": 0}``), an incorrectly-sized scalar is
           still caught even though ``node_map`` itself is omitted for this zone
         """
-        x, y, z, nodes = create_FE_tet()
+        x, y, z, nodes = create_fe_tet()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         z = z.astype(np.float32)
@@ -1303,7 +1311,7 @@ class TestWriteFEZone:
         self, fmt: str, output_path: Callable
     ) -> None:
         """FEPOLYGON is face-based: every writer points to ``write_poly_zone``."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         path = _path(output_path, fmt, "write_fe_unsupported_zone_type")
 
         with pytest.raises(ValueError, match="write_poly_zone"):
@@ -1326,7 +1334,7 @@ class TestWriteFEZone:
           -> :class:`tecio.EmptyZoneWarning`, no :exc:`ValueError`
         - The writer is still usable afterward
         """
-        x, y, z, nodes = create_FE_tet()
+        x, y, z, nodes = create_fe_tet()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         z = z.astype(np.float32)
@@ -1779,7 +1787,7 @@ class TestWritePolyZone:
         self, fmt: str, output_path: Callable
     ) -> None:
         """A poly zone and an FE zone in one file keep their own reader classes."""
-        fx, fy, nodes = create_FE_tri()
+        fx, fy, nodes = create_fe_tri()
         x, y, faces, left, right = create_poly_two_cells()
 
         path = _path(output_path, fmt, "write_poly_with_fe")
@@ -1978,12 +1986,16 @@ class TestWritePolyErrors:
 
     @pytest.fixture
     def path(self, fmt: str, output_path: Callable) -> Path:
-        """Output file for a write that is expected to fail."""
+        """Output file for a write that is expected to fail.
+
+        Returns:
+            Output path string.
+        """
         return _path(output_path, fmt, "write_poly_error")
 
     def test_fe_zone_with_poly_type_points_to_write_poly_zone(self, path: Path) -> None:
         """``write_fe_zone`` refuses the face-based zone types."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         for zone_type in (ZoneType.FEPOLYGON, ZoneType.FEPOLYHEDRON):
             with (
                 pytest.raises(ValueError, match="write_poly_zone"),
@@ -2267,7 +2279,7 @@ class TestWritePolyErrors:
 
     def test_con_sharing_needs_matching_poly_zone(self, path: Path) -> None:
         """The source zone must exist, be a poly zone, and have the same type."""
-        fx, fy, nodes = create_FE_tri()
+        fx, fy, nodes = create_fe_tri()
         x, y, faces, left, right = create_poly_octagon()
 
         with (
@@ -2435,7 +2447,7 @@ class TestWritePolySzl:
         self, output_path: Callable
     ) -> None:
         """``write_fe_zone`` with a poly type points to ``write_poly_zone``."""
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         with (
             pytest.raises(ValueError, match="write_poly_zone"),
             tecio.open(str(output_path("err.szplt")), "w") as w,

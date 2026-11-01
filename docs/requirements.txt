@@ -2,4 +2,5 @@ sphinx>=7.0
 sphinx-book-theme>=1.1
 sphinx-autodoc-typehints>=2.0
 sphinx-copybutton>=0.5.2
+sphinxcontrib-matlabdomain>=0.22
 myst-parser>=3.0

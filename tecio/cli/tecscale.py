@@ -85,7 +85,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.tecscale.main as tecscale
+        from tecio.cli.tecscale import main as tecscale
 
         tecscale(["-v", "Pressure", "-s", "1e-3", "flow.szplt"])
 
@@ -264,10 +264,11 @@ def _resolve_variable(spec: str, var_names: list[str]) -> int | None:
         var_names: Ordered list of variable names from the reader.
 
     Returns:
-        0-based variable index.
+        int: 0-based variable index, or ``None`` if the name is not found (an error is
+            printed to stderr).
 
     Raises:
-        SystemExit: If the spec cannot be resolved.
+        IndexError: If an integer spec is out of range.
 
     """
     # Try integer first.

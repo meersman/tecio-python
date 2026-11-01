@@ -2,6 +2,7 @@
 # ruff: noqa D100 D103
 
 import shutil
+import sys
 import tomllib
 from pathlib import Path
 
@@ -28,7 +29,9 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "sphinx_copybutton",
+    "sphinxcontrib.matlab",
     "myst_parser",
+    "paraview_stubs",
 ]
 
 templates_path = ["_templates"]
@@ -62,6 +65,14 @@ autodoc_default_options = {
 autodoc_typehints = "none"
 # autodoc_class_signature = "separated"
 autodoc_class_signature = "mixed"
+
+# Add the ParaView plugins to the path so autodoc can import them. The local
+# paraview_stubs extension stands in for ParaView and VTK, which are not installed for
+# the docs build.
+sys.path.insert(0, str(ROOT / "plugins" / "paraview"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "_ext"))
+
+matlab_src_dir = str(ROOT / "plugins")
 
 # -- Autosummary settings ----------------------------------------------------
 

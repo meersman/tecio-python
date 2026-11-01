@@ -161,7 +161,14 @@ class PltReadError(RuntimeError):
 
 
 def _read_int32(fp: io.BufferedIOBase, byte_order: str) -> int:
-    """Read a single INT32 with the given byte-order prefix."""
+    """Read a single INT32 with the given byte-order prefix.
+
+    Returns:
+        int: Value decoded by byte order.
+
+    Raises:
+        PltReadError: If the file ends before the value.
+    """
     raw = fp.read(4)
     if len(raw) < 4:
         raise PltReadError("Unexpected end of file reading INT32.")
@@ -170,7 +177,14 @@ def _read_int32(fp: io.BufferedIOBase, byte_order: str) -> int:
 
 
 def _read_int64(fp: io.BufferedIOBase, byte_order: str) -> int:
-    """Read a single INT64 with the given byte-order prefix."""
+    """Read a single INT64 with the given byte-order prefix.
+
+    Returns:
+        int: Value decoded by byte order.
+
+    Raises:
+        PltReadError: If the file ends before the value.
+    """
     raw = fp.read(8)
     if len(raw) < 8:
         raise PltReadError("Unexpected end of file reading INT64.")
@@ -179,7 +193,14 @@ def _read_int64(fp: io.BufferedIOBase, byte_order: str) -> int:
 
 
 def _read_float32(fp: io.BufferedIOBase, byte_order: str) -> float:
-    """Read a single FLOAT32 with the given byte-order prefix."""
+    """Read a single FLOAT32 with the given byte-order prefix.
+
+    Returns:
+        float: Value decoded by byte order.
+
+    Raises:
+        PltReadError: If the file ends before the value.
+    """
     raw = fp.read(4)
     if len(raw) < 4:
         raise PltReadError("Unexpected end of file reading FLOAT32.")
@@ -188,7 +209,14 @@ def _read_float32(fp: io.BufferedIOBase, byte_order: str) -> float:
 
 
 def _read_float64(fp: io.BufferedIOBase, byte_order: str) -> float:
-    """Read a single FLOAT64 with the given byte-order prefix."""
+    """Read a single FLOAT64 with the given byte-order prefix.
+
+    Returns:
+        float: Value decoded by byte order.
+
+    Raises:
+        PltReadError: If the file ends before the value.
+    """
     raw = fp.read(8)
     if len(raw) < 8:
         raise PltReadError("Unexpected end of file reading FLOAT64.")
@@ -201,6 +229,9 @@ def _read_string(fp: io.BufferedIOBase, byte_order: str) -> str:
 
     The PLT format stores each character as a 4-byte integer (see Note 1 of the format
     spec). The string is terminated by a zero INT32.
+
+    Returns:
+        str: utf-8 decoded string.
     """
     chars: list[str] = []
     while True:
@@ -226,7 +257,11 @@ def _skip_string(fp: io.BufferedIOBase, byte_order: str) -> None:
 
 
 def _peek_float32(fp: io.BufferedIOBase, byte_order: str) -> float:
-    """Peek at the next 4 bytes as a FLOAT32 without advancing the file pointer."""
+    """Peek at the next 4 bytes as a FLOAT32 without advancing the file pointer.
+
+    Returns:
+        float: The value of the peeked bytes as float32.
+    """
     pos = fp.tell()
     val = _read_float32(fp, byte_order)
     fp.seek(pos)
@@ -374,7 +409,11 @@ class _PltParser:
     # -- Header section ----------------------------------------------------------------
 
     def _parse_header(self, fp: io.BufferedIOBase) -> None:
-        """Parse the PLT header section up to and including EOHMARKER."""
+        """Parse the PLT header section up to and including EOHMARKER.
+
+        Raises:
+            PltReadError: If an unexpected header marker is found.
+        """
         self._detect_version_and_endian(fp)
         byte_order = self.byte_order
 
@@ -448,7 +487,12 @@ class _PltParser:
                 )
 
     def _detect_version_and_endian(self, fp: io.BufferedIOBase) -> None:
-        """Read magic bytes and INT32=1 endian probe; set ``self.byte_order``."""
+        """Read magic bytes and INT32=1 endian probe; set ``self.byte_order``.
+
+        Raises:
+            PltReadError: If the magic number is unrecognised or the byte-order probe is
+                invalid.
+        """
         magic = fp.read(8)
         if magic == _MAGIC_V75:
             self._file_version = "v75"
@@ -488,7 +532,12 @@ class _PltParser:
         )
 
     def _parse_zone_header(self, fp: io.BufferedIOBase, *, v191: bool) -> None:
-        """Parse a single zone header record and append to ``self.zones``."""
+        """Parse a single zone header record and append to ``self.zones``.
+
+        Raises:
+            PltReadError: If the zone is a poly zone in a v107 file or a v111 POINT
+                zone.
+        """
         byte_order = self.byte_order
         num_vars = len(self.var_names)
 
@@ -674,6 +723,9 @@ class _PltParser:
         The EOHMARKER has already been consumed by :meth:`_parse_header`. We iterate
         over zones in declaration order, matching each data block to the corresponding
         :class:`_ZoneMeta` in ``self.zones``.
+
+        Raises:
+            PltReadError: If a zone marker is not valid.
         """
         if self._file_version == "v75":
             from ._plt_legacy import parse_v75_data_section
@@ -1102,7 +1154,11 @@ class TecplotPltVariableReader(TecplotVariableReader):
         return self._meta.value_locations[self.var_index]
 
     def is_passive(self) -> bool:
-        """True if this variable is passive in this zone."""
+        """True if this variable is passive in this zone.
+
+        Returns:
+            bool: ``True`` for a passive variable.
+        """
         return self._meta.is_passive[self.var_index]
 
     @property
@@ -1240,6 +1296,9 @@ class TecplotPltVariableReader(TecplotVariableReader):
         rather than once per variable. A copy is always returned, never the cached
         array's own view, so a caller mutating the result cannot corrupt the shared
         cache or a later re-read of the same variable.
+
+        Returns:
+            NDArray: Copy of the variable values for the requested rows.
         """
         field_name = meta.point_field_by_var[self.var_index]
 
@@ -1275,7 +1334,11 @@ def _load_plt_variables(
     byte_order: str,
     all_metas: list[_ZoneMeta] | None,
 ) -> list[TecplotVariableReader]:
-    """Build this zone's variable readers. Shared by both PLT zone classes."""
+    """Build this zone's variable readers. Shared by both PLT zone classes.
+
+    Returns:
+        list: One reader class per variable of the zone.
+    """
     return [
         TecplotPltVariableReader(
             file_path=file_path,
@@ -1454,7 +1517,12 @@ class TecplotPltFEZoneReader(TecplotFEZoneReader):
         return _resolve_connectivity_meta(self._meta, self._all_metas)
 
     def _load_node_map(self) -> npt.NDArray[np.int64] | None:
-        """Read this zone's node connectivity."""
+        """Read this zone's node connectivity.
+
+        Returns:
+            NDArray: Zero-based node map, or ``None`` if the zone has no stored
+                connectivity.
+        """
         meta = self._resolve_connectivity_meta()
         if meta is None or meta.connectivity_offset is None:
             return None
@@ -1583,7 +1651,11 @@ class TecplotPltPolyZoneReader(TecplotPolyZoneReader):
         )
 
     def _read_section(self, meta: _ZoneMeta, key: str) -> npt.NDArray[np.int64]:
-        """Read one recorded face-map block as int64."""
+        """Read one recorded face-map block as int64.
+
+        Returns:
+            NDArray: Flat array of node indices for section.
+        """
         offset, count, itemsize = meta.poly_sections[key]
         dt = np.dtype(f"{self._byte_order}i{itemsize}")
         with open(self._file_path, "rb") as fp:
@@ -1619,7 +1691,11 @@ def _build_plt_zone(
     byte_order: str,
     all_metas: list[_ZoneMeta] | None,
 ) -> TecplotZoneReader:
-    """Construct the right concrete zone reader for one parsed zone."""
+    """Construct the right concrete zone reader for one parsed zone.
+
+    Returns:
+        TecplotZoneReader: The zone reader class that matches the zone type.
+    """
     if meta.zone_type == ZoneType.ORDERED:
         return TecplotPltOrderedZoneReader(
             file_path, meta, zone_index, num_vars, var_names, byte_order, all_metas

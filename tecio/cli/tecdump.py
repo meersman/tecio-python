@@ -158,7 +158,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Print all available info for the given SZPLT file."""
+    """Print all available info for the given SZPLT file.
+
+    Returns:
+        int: ``0`` on success.
+    """
     # Get command line input
     args = _parse_args(argv)
 

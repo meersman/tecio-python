@@ -91,7 +91,11 @@ def _is_readable(path: Path) -> bool:
 
 
 def _copy_onera(src_fmt: str, dst_dir: Path, name: str) -> Path:
-    """Copy an Onera file into *dst_dir* under *name*, preserving extension."""
+    """Copy an Onera file into *dst_dir* under *name*, preserving extension.
+
+    Returns:
+        Path of the copy.
+    """
     src = _ONERA[src_fmt]
     dst = dst_dir / f"{name}{src.suffix}"
     shutil.copy(src, dst)
@@ -102,6 +106,9 @@ def _load_mat(path: Path, *, squeeze: bool = True) -> dict[str, Any]:
     """Load a ``.mat`` file as MATLAB structs (``mat_struct`` objects).
 
     Used only by the tec2mat tests.
+
+    Returns:
+        The loaded MATLAB variables.
     """
     return sio.loadmat(str(path), struct_as_record=False, squeeze_me=squeeze)
 
@@ -143,7 +150,11 @@ def _write_synthetic_ijk(path: Path) -> None:
 
 
 def _read_zones(path: Path) -> list[dict[str, Any]]:
-    """Read every zone of *path* into a plain dict for comparisons."""
+    """Read every zone of *path* into a plain dict for comparisons.
+
+    Returns:
+        dict: zone data as a dictionary after writing to file.
+    """
     zones: list[dict[str, Any]] = []
     with tecio.open(str(path), "r") as r:
         for zone in r.zones:
@@ -205,7 +216,11 @@ def _assert_same_zones(
 
 @pytest.fixture(scope="session")
 def meta() -> dict:
-    """Dataset metadata from Onera.szplt, read once per test session."""
+    """Dataset metadata from Onera.szplt, read once per test session.
+
+    Returns:
+        Number of zones and variables, and the variable names.
+    """
     with tecio.open(str(_ONERA["szplt"]), "r") as r:
         return {
             "num_zones": r.num_zones,
@@ -216,7 +231,11 @@ def meta() -> dict:
 
 @pytest.fixture(params=_FORMATS)
 def onera_path(request) -> Path:
-    """Yield the Onera input file for each supported format."""
+    """Yield the Onera input file for each supported format.
+
+    Returns:
+        Path of the Onera file in the current format.
+    """
     return _ONERA[request.param]
 
 
@@ -273,7 +292,11 @@ def _write_shared_dataset(path: Path) -> None:
 
 @pytest.fixture(scope="session")
 def shared_dataset(tmp_path_factory) -> dict[str, Path]:
-    """Write the shared dataset once per session, in every format."""
+    """Write the shared dataset once per session, in every format.
+
+    Returns:
+        Path of the dataset file for each format.
+    """
     out_dir = tmp_path_factory.mktemp("shared_dataset")
     paths: dict[str, Path] = {}
     for fmt, ext in zip(_FORMATS, ["szplt", "plt", "dat"], strict=True):
@@ -285,7 +308,11 @@ def shared_dataset(tmp_path_factory) -> dict[str, Path]:
 
 @pytest.fixture(params=_FORMATS)
 def shared_path(request, shared_dataset: dict[str, Path]) -> Path:
-    """Yield the shared-dataset input file for each supported format."""
+    """Yield the shared-dataset input file for each supported format.
+
+    Returns:
+        Path of the dataset file in the current format.
+    """
     return shared_dataset[request.param]
 
 
@@ -342,7 +369,11 @@ def _write_aux_dataset(path: Path) -> None:
 
 @pytest.fixture(scope="session")
 def aux_dataset(tmp_path_factory) -> dict[str, Path]:
-    """Write the aux-populated dataset once per session, in every format."""
+    """Write the aux-populated dataset once per session, in every format.
+
+    Returns:
+        Path of the dataset file for each format.
+    """
     out_dir = tmp_path_factory.mktemp("aux_dataset")
     paths: dict[str, Path] = {}
     for fmt, ext in zip(_FORMATS, ["szplt", "plt", "dat"], strict=True):
@@ -354,7 +385,11 @@ def aux_dataset(tmp_path_factory) -> dict[str, Path]:
 
 @pytest.fixture(params=_FORMATS)
 def aux_path(request, aux_dataset: dict[str, Path]) -> Path:
-    """Yield the aux-populated dataset's input file for each supported format."""
+    """Yield the aux-populated dataset's input file for each supported format.
+
+    Returns:
+        Path of the dataset file in the current format.
+    """
     return aux_dataset[request.param]
 
 
@@ -1464,7 +1499,11 @@ class TestTecstats:
 
 
 def _run_teconvert_other_format(tmp_path: Path, src: Path) -> tuple[Path, int]:
-    """Run teconvert to a format guaranteed to differ from *src*'s own."""
+    """Run teconvert to a format guaranteed to differ from *src*'s own.
+
+    Returns:
+        Path of the converted file and the exit code of the tool.
+    """
     flag = _other_format_flag(src)
     dst = tmp_path / f"copy{_FLAG_TO_EXT[flag]}"
     ret = teconvert([flag, "-o", str(dst), "--force", str(src)])
@@ -2499,13 +2538,21 @@ _SZPLT_TOOLS: dict[str, tuple[Any, list[str]]] = {
 
 @pytest.fixture(params=_POLY_FORMATS)
 def poly_fmt(request) -> str:
-    """Parametrize a test across the formats that can hold poly zones."""
+    """Parametrize a test across the formats that can hold poly zones.
+
+    Returns:
+        The file format extension.
+    """
     return request.param
 
 
 @pytest.fixture
 def sphere_path(poly_fmt: str) -> Path:
-    """Yield the Sphere reference file for each format that can hold poly zones."""
+    """Yield the Sphere reference file for each format that can hold poly zones.
+
+    Returns:
+        Path of the Sphere file in the current format.
+    """
     path = _TEST_DIR / f"Sphere.{poly_fmt}"
     if not path.exists():
         pytest.skip(f"No Sphere fixture at {path}")
@@ -2513,7 +2560,11 @@ def sphere_path(poly_fmt: str) -> Path:
 
 
 def _sphere_copy(sphere_path: Path, tmp_path: Path, name: str = "sphere") -> Path:
-    """Copy the Sphere file into *tmp_path*, for tools that write next to the input."""
+    """Copy the Sphere file into *tmp_path*, for tools that write next to the input.
+
+    Returns:
+        Path of the copy.
+    """
     dst = tmp_path / f"{name}{sphere_path.suffix}"
     shutil.copy(sphere_path, dst)
     return dst

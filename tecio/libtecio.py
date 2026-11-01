@@ -230,6 +230,12 @@ def _to_int_value(value: int | Enum, enum_class: type[Enum] | None = None) -> in
     """Convert Enum or int to int value.
 
     (Optional check against enum_class if provided.)
+
+    Returns:
+        int: Enum value.
+
+    Raises:
+        ValueError: If *value* is not a member of *enum_class*.
     """
     if isinstance(value, Enum):
         return value.value
@@ -246,7 +252,11 @@ def _to_int_value(value: int | Enum, enum_class: type[Enum] | None = None) -> in
 
 
 def _process_sequence(seq: Sequence[int | Enum] | None) -> ctypes.Array | None:
-    """Convert sequence of int/Enum to ctypes array, handling None."""
+    """Convert sequence of int/Enum to ctypes array, handling None.
+
+    Returns:
+        ctypes.Array: 32-bit integers, or ``None`` if *seq* is ``None``.
+    """
     if seq is None:
         return None
     values = [_to_int_value(v) for v in seq]
@@ -254,7 +264,14 @@ def _process_sequence(seq: Sequence[int | Enum] | None) -> ctypes.Array | None:
 
 
 def _decode(value: bytes | None) -> str:
-    """Decode a ctypes c_char_p value to str, raising if unexpectedly null."""
+    """Decode a ctypes c_char_p value to str, raising if unexpectedly null.
+
+    Returns:
+        str: utf-8 decoded string.
+
+    Raises:
+        ValueError: If *value* is ``None``.
+    """
     if value is None:
         raise ValueError("Unexpected null pointer returned from TecIO C library.")
     return value.decode("utf-8")
@@ -2731,6 +2748,7 @@ def tec_file_writer_open(
 
     Raises:
         TecioError: On C library error.
+        TypeError: If *file_type* is not a :class:`FileType`.
     """
     assert lib is not None  # narrowed: @requires_symbol already checked
     if not isinstance(file_type, FileType):
@@ -3702,6 +3720,7 @@ def tecini142(
 
     Raises:
         TecioError: On C library error.
+        TypeError: If *file_type* is not a :class:`FileType`.
 
     Note:
         Must be called before any zone or data operations

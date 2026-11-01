@@ -45,7 +45,8 @@ _RTOL_F32 = 1e-5
 def _write_simple_szplt(path: Path, n_zones: int = 1) -> dict:
     """Write a trivial SZL file with *n_zones* identical IJK zones.
 
-    Returns the written coordinate arrays for later comparison.
+    Returns:
+        dict: ndarrays for keys ``x`` and ``c`` after writing to file.
     """
     x = np.linspace(0.0, 1.0, 10, dtype=np.float32)
     c = np.sin(2 * np.pi * x).astype(np.float32)
@@ -62,7 +63,11 @@ def _write_simple_szplt(path: Path, n_zones: int = 1) -> dict:
 
 
 def _write_simple_plt(path: Path, n_zones: int = 1) -> dict:
-    """Write a trivial PLT file with *n_zones* identical IJK zones."""
+    """Write a trivial PLT file with *n_zones* identical IJK zones.
+
+    Returns:
+        dict: ndarrays for keys ``x`` and ``c`` after writing to file.
+    """
     x = np.linspace(0.0, 1.0, 8, dtype=np.float32)
     c = np.cos(2 * np.pi * x).astype(np.float32)
 
@@ -78,7 +83,11 @@ def _write_simple_plt(path: Path, n_zones: int = 1) -> dict:
 
 
 def _write_simple_dat(path: Path, n_zones: int = 1) -> dict:
-    """Write a trivial DAT file with *n_zones* identical IJK zones."""
+    """Write a trivial DAT file with *n_zones* identical IJK zones.
+
+    Returns:
+        dict: ndarrays for keys ``x`` and ``c`` after writing to file.
+    """
     x = np.linspace(0.0, 1.0, 6, dtype=np.float32)
     c = (x**2).astype(np.float32)
 

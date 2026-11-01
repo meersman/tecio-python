@@ -56,7 +56,11 @@ _FE_SIMPLE: frozenset[ZoneType] = frozenset({
 
 
 def _infer_data_type(dt: DataType | np.dtype) -> DataType:
-    """Return the closest C-supported DataType for a DataType or NumPy dtype."""
+    """Return the closest C-supported DataType for a DataType or NumPy dtype.
+
+    Raises:
+        ValueError: If the dtype is not supported.
+    """
     # Mapping of NumPy type categories to closest DataType
     closest_dtype_map = {
         np.dtype(np.float64): DataType.DOUBLE,
@@ -142,6 +146,9 @@ def _write_data(
         2. Defaults to double precision for array-like (list, tuple, etc)
         3. Optionally casts to input DataType or numpy dtype.
         4. Assumes data is in the correct shape and order (column major / Fortran order)
+
+    Raises:
+        ValueError: If the resolved data type is not supported.
     """
     # Mappings between C-supported data types and numpy dtypes
     dtype_to_datatype: dict[np.dtype, DataType] = {
@@ -398,8 +405,11 @@ class TecplotSzlWriter(TecplotWriter):
     def _check_handle(self) -> ctypes.c_void_p:
         """Return file handle catching errors if the writer has already been closed.
 
-        This ensures the that each libtecio call will execute or return an appropriate
-        ValueError.
+        This ensures the that each libtecio call will execute or raise an appropriate
+        RuntimeError.
+
+        Raises:
+            RuntimeError: If the writer has been closed.
         """
         if self.handle is None:
             raise RuntimeError(f"I/O operation on closed file: '{self.path}'")
@@ -512,14 +522,15 @@ class TecplotSzlWriter(TecplotWriter):
                 final output file when :meth:`close` is called.
 
         Raises:
-           NotImplementedError:
+            NotImplementedError:
                If *datapacking* is :attr:`~tecio.libtecio.DataPacking.POINT`.
             TypeError:
                If *passive_vars*/*var_sharing* isn't a list/tuple/set/mapping as
                appropriate, or mixes variable names and indices.
             ValueError:
-               If I/O operation attempted on closed or None file handle, or a variable
-               is named in both *passive_vars* and *var_sharing*.
+               If I/O operation attempted on closed or empty file handle, a variable is
+               named in both *passive_vars* and *var_sharing*, or *datapacking* is not a
+               recognised value.
             RuntimeError:
                If attempting to write variable aux before variables are defined.
             KeyError:

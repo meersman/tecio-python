@@ -142,7 +142,11 @@ class TecplotSzlVariableReader(TecplotVariableReader):
         return libtecio.tec_var_get_name(self._handle, self.var_index + 1)
 
     def is_enabled(self) -> bool:
-        """True if the variable is enabled (dataset-level flag, queried live)."""
+        """True if the variable is enabled (dataset-level flag, queried live).
+
+        Returns:
+            bool: ``True`` for an enabled variable.
+        """
         return libtecio.tec_var_is_enabled(self._handle, self.var_index + 1)
 
     @property
@@ -173,14 +177,22 @@ class TecplotSzlVariableReader(TecplotVariableReader):
         )
 
     def is_passive(self) -> bool:
-        """True if this variable is passive in this zone."""
+        """True if this variable is passive in this zone.
+
+        Returns:
+            bool: ``True`` for a passive variable.
+        """
         return libtecio.tec_zone_var_is_passive(
             self._handle, self.zone_index + 1, self.var_index + 1
         )
 
     @property
     def num_values(self) -> int:
-        """Number of values in the data array."""
+        """Number of values in the data array.
+
+        Returns:
+            int: Number of values.
+        """
         return libtecio.tec_zone_var_get_num_values(
             self._handle, self._data_zone() + 1, self.var_index + 1
         )
@@ -280,12 +292,20 @@ class TecplotSzlVariableReader(TecplotVariableReader):
 def _load_szl_variables(
     handle: ctypes.c_void_p, zone_index: int, num_vars: int
 ) -> list[TecplotVariableReader]:
-    """Build this zone's variable readers. Shared by both SZL zone classes."""
+    """Build this zone's variable readers. Shared by both SZL zone classes.
+
+    Returns:
+        list: One reader per variable of the zone.
+    """
     return [TecplotSzlVariableReader(handle, zone_index, i) for i in range(num_vars)]
 
 
 def _szl_zone_is_enabled(handle: ctypes.c_void_p, zone_index: int) -> bool:
-    """Query the C library's per-zone enabled flag. Shared by both SZL zone classes."""
+    """Query the C library's per-zone enabled flag. Shared by both SZL zone classes.
+
+    Returns:
+        bool: ``True`` if the zone is enabled.
+    """
     return libtecio.tec_zone_is_enabled(handle, zone_index + 1)
 
 
@@ -321,6 +341,9 @@ class TecplotSzlOrderedZoneReader(TecplotOrderedZoneReader):
 
         SZL is the only format with a genuine per-zone enabled flag; PLT and
         DAT use the base class default of always True.
+
+        Returns:
+            bool: ``True`` for an enabled zone.
         """
         return _szl_zone_is_enabled(self._handle, self.zone_index)
 
@@ -368,6 +391,9 @@ class TecplotSzlFEZoneReader(TecplotFEZoneReader):
 
         SZL is the only format with a genuine per-zone enabled flag; PLT and DAT use the
         base class default of always True.
+
+        Returns:
+            bool: ``True`` for an enabled zone.
         """
         return _szl_zone_is_enabled(self._handle, self.zone_index)
 
@@ -441,6 +467,9 @@ def _build_szl_zone(
     queries the C library for the zone type first, cheap, one call, then dispatches to
     the matching class.
 
+    Returns:
+        TecplotZoneReader: The zone reader class that matches the zone type.
+
     Raises:
         NotImplementedError: For polygon and polyhedron zones, which only the PLT and
             DAT readers support.
@@ -487,7 +516,11 @@ class TecplotSzlReader(TecplotReader):
         self._dataset_auxdata: TecplotAuxDataReader | None = None
 
     def _check_handle(self) -> ctypes.c_void_p:
-        """Return the file handle, or raise if the reader has been closed."""
+        """Return the file handle, or raise if the reader has been closed.
+
+        Raises:
+            ValueError: If the reader has been closed.
+        """
         if self._handle is None:
             raise ValueError(f"I/O operation on closed file: '{self._path}'")
         return self._handle

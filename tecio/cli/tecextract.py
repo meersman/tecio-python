@@ -68,7 +68,7 @@ Examples:
     Call directly from a Tecplot macro or Python session, passing arguments as a list of
     strings::
 
-        import tecio.cli.tecextract.main as tecextract
+        from tecio.cli.tecextract import main as tecextract
 
         tecextract([
             "-z",

@@ -149,7 +149,11 @@ def parse_v75_header(parser: _PltParser, fp: io.BufferedIOBase) -> None:
 
 
 def _parse_v75_zone_header(parser: _PltParser, fp: io.BufferedIOBase) -> None:
-    """Parse one v75 zone header record and append it to ``parser.zones``."""
+    """Parse one v75 zone header record and append it to ``parser.zones``.
+
+    Raises:
+        PltReadError: If the data format or the FE element type is not recognised.
+    """
     byte_order = parser.byte_order
     meta = _ZoneMeta()
 
@@ -275,6 +279,10 @@ def parse_v75_data_section(parser: _PltParser, fp: io.BufferedIOBase) -> None:
 
     Iterates zones in declaration order, matching :meth:`_PltParser`'s
     contract for every other version.
+
+    Raises:
+        PltReadError: If a zone marker is wrong or a repeated variable reference is
+            invalid.
     """
     byte_order = parser.byte_order
     num_vars = len(parser.var_names)

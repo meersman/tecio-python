@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tecio-python"
-version = "0.4.0"
+version = "0.4.1"
 license = "Apache-2.0"
 description = "Python interface for reading and writing Tecplot data files"
 
@@ -61,11 +61,13 @@ docs = [
     "sphinx>=7.0",
     "sphinx-book-theme>=1.1",
     "sphinx-autodoc-typehints>=2.0",
+    "sphinx-copybutton>=0.5.2",
+    "sphinxcontrib-matlabdomain>=0.22",
     "myst-parser>=3.0",
 ]
 mat = ["scipy"]
 all = [
-   "build",
+    "build",
     "twine",
     "ruff",
     "ty",
@@ -74,6 +76,8 @@ all = [
     "sphinx>=7.0",
     "sphinx-book-theme>=1.1",
     "sphinx-autodoc-typehints>=2.0",
+    "sphinx-copybutton>=0.5.2",
+    "sphinxcontrib-matlabdomain>=0.22",
     "myst-parser>=3.0",
     "scipy",
 ]
@@ -115,11 +119,11 @@ select = [
 
    # Explicit preview rules
    "DOC102",
-   #"DOC201",
+   "DOC201",
    "DOC202",
    "DOC402",
    "DOC403",
-   #"DOC501",
+   "DOC501",
 ]
 extend-ignore = [
     "D203",

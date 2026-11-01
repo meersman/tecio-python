@@ -123,7 +123,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.tec2mat.main as tec2mat
+        from tecio.cli.tec2mat import main as tec2mat
 
         tec2mat(["-c", "-o", "flow.mat", "flow.szplt"])
 

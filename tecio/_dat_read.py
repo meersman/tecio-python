@@ -173,6 +173,9 @@ _MAX_FAST_BLOCK_ITERATIONS: int = 64
 def _quote(s: str) -> str:
     """Wrap *s* in double-quotes, escaping embedded double-quotes.
 
+    Returns:
+        str: Stripped string.
+
     Example:
         >>> q = _quote("hello world")
     """
@@ -181,6 +184,9 @@ def _quote(s: str) -> str:
 
 def _unquote(s: str) -> str:
     r"""Remove surrounding double-quotes and unescape internal ``\\"``.
+
+    Returns:
+        str: String without the surrounding quotes.
 
     Example:
         >>> s = _unquote('"hello \\"world\\""')
@@ -193,6 +199,9 @@ def _unquote(s: str) -> str:
 
 def _strip_comment(line: str) -> str:
     """Remove a Tecplot ``#`` comment and trailing whitespace.
+
+    Returns:
+        str: The line without the comment and trailing whitespace.
 
     Example:
         >>> clean = _strip_comment(line)
@@ -395,6 +404,9 @@ def _kv_split(text: str) -> dict[str, str]:
 
     Handles quoted values, parenthesised blocks (VARLOCATION, VARSHARELIST), and
     bracketed lists (PASSIVEVARLIST).
+
+    Returns:
+        dict: Mapping of upper-cased keys to their raw string values.
 
     Example:
         >>> d = _kv_split("I=3, J=4, K=1")
@@ -685,6 +697,9 @@ def _parse_dt(text: str) -> list[DataType]:
 def _parse_auxdata_line(line: str) -> tuple[str, str]:
     """Parse ``DATASETAUXDATA name="value"`` → ``(name, value)``.
 
+    Returns:
+        tuple: Tuple of the name and value, or empty strings if the line has no ``=``.
+
     Example:
         >>> name, val = _parse_auxdata_line('DATASETAUXDATA Solver="MyCFD"')
     """
@@ -769,7 +784,11 @@ class _LineBuffer:
         return ""
 
     def next_stripped(self) -> str:
-        """Consume and return the next non-blank stripped line."""
+        """Consume and return the next non-blank stripped line.
+
+        Returns:
+            str: The next non-blank line, or an empty string at the end of the file.
+        """
         if self._peeked is None:
             self.peek_stripped()
         value = self._peeked or ""
@@ -802,6 +821,9 @@ class _LineBuffer:
 
         Intended only for the numeric fast-path readers, which feed the result straight
         to a whitespace-tolerant NumPy parser and don't need per-line preprocessing.
+
+        Returns:
+            list: The raw lines, fewer than *count* at the end of the file.
 
         Example:
             >>> lines = buf.take_raw(64)
@@ -938,7 +960,11 @@ class TecplotDatVariableReader(TecplotVariableReader):
         return self._value_location
 
     def is_passive(self) -> bool:
-        """True if this variable is passive (no data in this zone)."""
+        """True if this variable is passive (no data in this zone).
+
+        Returns:
+            bool: ``True`` for a passive variable.
+        """
         return self._passive
 
     @property
@@ -1612,6 +1638,10 @@ class TecplotDatReader(TecplotReader):
     def _parse_zone(self, tokens: _LineBuffer) -> None:
         """Parse one ZONE block (header + data blocks + connectivity).
 
+        Raises:
+            ValueError: If the data packing is unsupported, a poly zone is not BLOCK
+                packed, or ``DT=`` does not give one type per variable.
+
         Example:
             >>> self._parse_zone(tokens)
         """
@@ -1962,7 +1992,11 @@ class TecplotDatReader(TecplotReader):
         face_connections: npt.NDArray[np.int64] | None = None,
         face_neighbors_complete: bool | None = None,
     ) -> TecplotZoneReader:
-        """Construct the right concrete zone reader for one parsed zone."""
+        """Construct the right concrete zone reader for one parsed zone.
+
+        Returns:
+            TecplotZoneReader: The reader class that matches *zone_type*.
+        """
         if zone_type == ZoneType.ORDERED:
             return TecplotDatOrderedZoneReader(
                 zone_index=zone_index,
@@ -2009,6 +2043,9 @@ class TecplotDatReader(TecplotReader):
         The sections are introduced by ``#`` comments, which are skipped. All indices
         are 1-based in ASCII (0 for no element, ``-k`` for the k-th boundary face), so
         every array is shifted down by one to the public convention.
+
+        Returns:
+            dict: Face map arrays by name, with 0-based indices.
 
         Raises:
             ValueError: If a section is shorter than the header declares.
@@ -2069,6 +2106,10 @@ class TecplotDatReader(TecplotReader):
         from *tokens* at the position the fast path started from, so the two never
         disagree about what was consumed.
 
+        Returns:
+            NDArray: Float64 array of *n_values* values, or fewer if the data block ends
+                early.
+
         See Also:
             :meth:`_read_block_var_data`/:meth:`_read_point_var_data`.
 
@@ -2105,6 +2146,10 @@ class TecplotDatReader(TecplotReader):
         the slow, boundary-aware parser. A ``ValueError`` from ``numpy.fromstring`` is
         allowed to propagate to the caller for the same reason.
 
+        Returns:
+            NDArray: Array of *n_values* values, or ``None`` if the fast path cannot
+                read them.
+
         Example:
             >>> arr = TecplotDatReader._read_float_block_fast(tokens, 100)
 
@@ -2140,6 +2185,9 @@ class TecplotDatReader(TecplotReader):
         skipping any that aren't valid floats, stopping at a block boundary (see
         :func:`_is_float_block_boundary`) even if *n_values* hasn't been reached
         yet. Slow by design, but guarantees a result either way.
+
+        Returns:
+            NDArray: Float64 array of up to *n_values* values.
 
         Example:
             >>> arr = TecplotDatReader._read_float_block_slow(tokens, 100)
@@ -2182,6 +2230,9 @@ class TecplotDatReader(TecplotReader):
         Reading one variable at a time (rather than all of them in a single combined
         call) is deliberate: :meth:`_read_float_block`'s vectorized fast path already
         costs only a handful of C-level calls per block regardless of size.
+
+        Returns:
+            list: One array per variable, ``None`` for passive and shared variables.
 
         Note:
             Passive and shared variables contribute a ``None`` placeholder to the
@@ -2230,6 +2281,9 @@ class TecplotDatReader(TecplotReader):
         contribute a ``None`` placeholder to the returned list. Each column is cast to
         its variable's actual declared dtype (from ``DT=``, or the spec's documented
         SINGLE default) right where it's extracted from the interleaved rows.
+
+        Returns:
+            list: One array per variable, ``None`` for passive and shared variables.
 
         See Also:
             :meth:`_read_block_var_data`
@@ -2290,6 +2344,9 @@ class TecplotDatReader(TecplotReader):
         tolerant-slow-path split as :meth:`_read_float_block`; see that method's
         docstring for the rationale.
 
+        Returns:
+            NDArray: Int64 array of *n_values* values, or fewer if the data block ends early.
+
         Examples:
             >>> arr = TecplotDatReader._read_int_block(tokens, 24)
         """
@@ -2313,6 +2370,9 @@ class TecplotDatReader(TecplotReader):
 
         See :meth:`_read_float_block_fast`, which this mirrors exactly except for the
         target dtype.
+
+        Returns:
+            NDArray: Array of *n_values* values, or ``None`` if the fast path cannot read them.
 
         Example:
             >>> arr = TecplotDatReader._read_int_block_fast(tokens, 24)
@@ -2341,6 +2401,9 @@ class TecplotDatReader(TecplotReader):
     @staticmethod
     def _read_int_block_slow(tokens: _LineBuffer, n_values: int) -> npt.NDArray:
         """Tolerant, token-by-token fallback for :meth:`_read_int_block`.
+
+        Returns:
+            NDArray: Int64 array of up to *n_values* values.
 
         Example:
             >>> arr = TecplotDatReader._read_int_block_slow(tokens, 24)

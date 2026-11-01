@@ -292,6 +292,9 @@ def _resolve_common_var(reader: _TecioReader, key: str) -> str | None:
     ``Common.UVar`` hold a 1-based dataset variable number when present. Returns
     ``None`` if *key* is absent from the dataset aux data, isn't a valid integer, or
     is out of range for the dataset -- the caller decides what to fall back to.
+
+    Returns:
+        str: Variable name for the item, or ``None`` if it is absent or invalid.
     """
     index = reader.auxdata.as_int(key)
     if index is None:
@@ -313,6 +316,9 @@ def _coerce_aux_value(value: str) -> int | float | str:
     the original string. ``int()`` is tried before ``float()`` so an integer-looking
     value (e.g. the variable number in ``Common.XVar``) becomes a integer rather than a
     ``1.0``-style float.
+
+    Returns:
+        str: The value as an ``int`` or ``float`` if it parses as one, else the string.
     """
     try:
         return int(value)
@@ -389,7 +395,11 @@ def _vtk_cell_array(
 
 
 def _cell_types(counts: npt.NDArray[np.int64], cell_type: int) -> Any:
-    """Per-cell type array: *cell_type*, or an empty cell for an element with no faces."""
+    """Per-cell type array: *cell_type*, or an empty cell for an element with no faces.
+
+    Returns:
+        VTK array holding one cell type per element.
+    """
     types = np.where(counts > 0, cell_type, VTK_EMPTY_CELL).astype(np.uint8)
     vtk_types = vtkUnsignedCharArray()
     vtk_types.DeepCopy(numpy_support.numpy_to_vtk(types, deep=True))
@@ -401,6 +411,9 @@ def _chain_undirected(a: npt.NDArray, b: npt.NDArray) -> npt.NDArray[np.int64]:
 
     Used only for the rare element whose edges do not chain by direction. Falls back
     to the edges' own order if they do not form one simple loop.
+
+    Returns:
+        NDArray: Node indices of the loop, in order.
     """
     ends = list(zip(a.tolist(), b.tolist(), strict=True))
     at_node: dict[int, list[int]] = {}
@@ -764,12 +777,20 @@ class TecplotReader(VTKPythonAlgorithmBase):
 
     @smproperty.dataarrayselection(name="Arrays")
     def GetDataArraySelection(self) -> vtkDataArraySelection:
-        """Which dataset variables load as point/cell data arrays."""
+        """Which dataset variables load as point/cell data arrays.
+
+        Returns:
+            vtkDataArraySelection: Selection object for the dataset variables.
+        """
         return self._array_selection
 
     @smproperty.dataarrayselection(name="Zones")
     def GetZoneSelection(self) -> vtkDataArraySelection:
-        """Which zones load as blocks -- useful to skip zones in large files."""
+        """Which zones load as blocks -- useful to skip zones in large files.
+
+        Returns:
+            vtkDataArraySelection: Selection object for the zones.
+        """
         return self._zone_selection
 
     # -- Coordinate variable overrides ------------------------------------------------
@@ -779,6 +800,9 @@ class TecplotReader(VTKPythonAlgorithmBase):
         """Choices offered by the X/Y/Z array dropdowns.
 
         Eg ``"(auto)"`` plus every variable.
+
+        Returns:
+            list: ``"(auto)"`` followed by the dataset variable names.
         """
         try:
             reader = self._get_reader()
@@ -890,6 +914,10 @@ class TecplotReader(VTKPythonAlgorithmBase):
         ``Common.UVar``/``Common.VVar``/``Common.WVar`` dataset aux data; anything left
         unresolved stays ``None`` and is treated as zero when the vector is assembled,
         so a 2-D (U, V only) flow still gets a valid, glyph-able vector.
+
+        Returns:
+            tuple: Tuple of variable names for ``(u, v, w)``, with ``None`` for an
+                unresolved component.
         """
         names = list(reader.variables)
 
@@ -924,6 +952,10 @@ class TecplotReader(VTKPythonAlgorithmBase):
         the first and second dataset variables, since almost every Tecplot CFD file
         leads with its coordinates. Z has no positional fallback beyond the third
         variable and defaults to all-zero (2-D data) when nothing is found.
+
+        Returns:
+            tuple: Tuple of variable names for ``(x, y, z)``, with ``None`` for an
+                unresolved axis.
         """
         names = list(reader.variables)
 
@@ -964,6 +996,9 @@ class TecplotReader(VTKPythonAlgorithmBase):
         Zones with ``strand_id == 0`` are the standard Tecplot convention for
         static/always-present geometry, so they're excluded from the time axis and
         instead included at every requested time (see :meth:`RequestData`).
+
+        Returns:
+            list: Sorted list of solution times in ascending order.
         """
         times = {zone.solution_time for zone in reader.zones if zone.strand_id != 0}
         return sorted(times)
@@ -972,7 +1007,11 @@ class TecplotReader(VTKPythonAlgorithmBase):
         name="TimestepValues", information_only="1", si_class="vtkSITimeStepsProperty"
     )
     def GetTimestepValues(self) -> list[float]:
-        """Publish the dataset's discrete solution times to ParaView's time UI."""
+        """Publish the dataset's discrete solution times to ParaView's time UI.
+
+        Returns:
+            list: Solution times, or an empty list if no file is loaded.
+        """
         try:
             reader = self._get_reader()
         except Exception:  # noqa: BLE001 - domain refresh must not raise into the UI
@@ -980,7 +1019,12 @@ class TecplotReader(VTKPythonAlgorithmBase):
         return self._compute_timesteps(reader) if reader is not None else []
 
     def _get_update_time(self, out_info: Any) -> float | None:
-        """Resolve the pipeline's requested time to one of the dataset's own times."""
+        """Resolve the pipeline's requested time to one of the dataset's own times.
+
+        Returns:
+            float: The matching dataset time, or ``None`` if there is no reader or no
+                time steps.
+        """
         reader = self._reader
         if reader is None:
             return None
@@ -1003,7 +1047,11 @@ class TecplotReader(VTKPythonAlgorithmBase):
     # -- Pipeline: RequestInformation --------------------------------------------------
 
     def RequestInformation(self, request, inInfoVec, outInfoVec) -> int:
-        """Publish the dataset's time steps, if any, before ``RequestData`` runs."""
+        """Publish the dataset's time steps, if any, before ``RequestData`` runs.
+
+        Returns:
+            int: ``1``, the VTK pipeline value for success.
+        """
         try:
             reader = self._get_reader()
         except Exception as exc:  # noqa: BLE001 - report and produce empty output
@@ -1028,7 +1076,11 @@ class TecplotReader(VTKPythonAlgorithmBase):
     # -- Pipeline: RequestData ---------------------------------------------------------
 
     def RequestData(self, request, inInfoVec, outInfoVec) -> int:
-        """Build the ``vtkMultiBlockDataSet`` output for the requested time step."""
+        """Build the ``vtkMultiBlockDataSet`` output for the requested time step.
+
+        Returns:
+            int: ``1``, the VTK pipeline value for success.
+        """
         output = vtkMultiBlockDataSet.GetData(outInfoVec, 0)
 
         try:
@@ -1123,6 +1175,12 @@ class TecplotReader(VTKPythonAlgorithmBase):
 
         ORDERED zones become a ``vtkStructuredGrid``. Finite-element, polygon, and
         polyhedron zones become a ``vtkUnstructuredGrid``.
+
+        Returns:
+            The structured or unstructured grid class for the zone.
+
+        Raises:
+            _UnsupportedZoneError: If the zone type is not supported by this reader.
         """
         # By the time any zone is being converted, RequestData has already gone
         # through _get_reader(), which raises RuntimeError if tecio failed to
@@ -1168,7 +1226,11 @@ class TecplotReader(VTKPythonAlgorithmBase):
         y_name: str | None,
         z_name: str | None,
     ) -> vtkStructuredGrid:
-        """Build a ``vtkStructuredGrid`` for an ORDERED zone."""
+        """Build a ``vtkStructuredGrid`` for an ORDERED zone.
+
+        Returns:
+            vtkStructuredGrid: Structured grid with the zone points.
+        """
         ni, nj, nk = zone.dimensions
         shape = (ni, nj, nk)
         x = self._fetch_ordered_coordinate(zone, x_name, shape)
@@ -1195,7 +1257,11 @@ class TecplotReader(VTKPythonAlgorithmBase):
     def _fetch_ordered_coordinate(
         zone: _TecioOrderedZone, name: str | None, shape: tuple[int, int, int]
     ) -> npt.NDArray[np.float64]:
-        """Return an ``(I, J, K)`` nodal coordinate array for *name*, or zeros."""
+        """Return an ``(I, J, K)`` nodal coordinate array for *name*, or zeros.
+
+        Raises:
+            _UnsupportedZoneError: If the variable is passive or is not nodal.
+        """
         if name is None:
             return np.zeros(shape, dtype=np.float64)
         values = zone.get_array(name)
@@ -1218,7 +1284,14 @@ class TecplotReader(VTKPythonAlgorithmBase):
         y_name: str | None,
         z_name: str | None,
     ) -> vtkUnstructuredGrid:
-        """Build a ``vtkUnstructuredGrid`` for a classic finite-element zone."""
+        """Build a ``vtkUnstructuredGrid`` for a classic finite-element zone.
+
+        Returns:
+            vtkUnstructuredGrid: Unstructured grid with the zone points and cells.
+
+        Raises:
+            _UnsupportedZoneError: If the zone has no connectivity.
+        """
         vtk_points = self._build_flat_points(zone, x_name, y_name, z_name)
 
         node_map = zone.node_map
@@ -1268,7 +1341,15 @@ class TecplotReader(VTKPythonAlgorithmBase):
         y_name: str | None,
         z_name: str | None,
     ) -> vtkUnstructuredGrid:
-        """Build a ``vtkUnstructuredGrid`` for a FEPOLYGON or FEPOLYHEDRON zone."""
+        """Build a ``vtkUnstructuredGrid`` for a FEPOLYGON or FEPOLYHEDRON zone.
+
+        Returns:
+            vtkUnstructuredGrid: Unstructured grid with the zone points and polygon or
+                polyhedron cells.
+
+        Raises:
+            _UnsupportedZoneError: If the zone has no face connectivity.
+        """
         vtk_points = self._build_flat_points(zone, x_name, y_name, z_name)
         num_elements = int(zone.num_elements)
         face_nodes, face_left, face_right = (
@@ -1310,7 +1391,12 @@ class TecplotReader(VTKPythonAlgorithmBase):
     def _fetch_flat_coordinate(
         zone: _TecioFEZone, name: str | None, n_nodes: int
     ) -> npt.NDArray[np.float64]:
-        """Return a flat, length-``n_nodes`` coordinate array for *name*, or zeros."""
+        """Return a flat, length-``n_nodes`` coordinate array for *name*, or zeros.
+
+        Raises:
+            _UnsupportedZoneError: If the variable is passive or does not have one value
+                per node.
+        """
         if name is None:
             return np.zeros(n_nodes, dtype=np.float64)
         values = zone.get_array(name)

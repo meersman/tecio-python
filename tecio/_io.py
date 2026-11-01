@@ -866,6 +866,9 @@ def open(
 def _validated_ext(path: str | os.PathLike) -> str:
     """Return *path*'s lowercased extension, or raise if unsupported.
 
+    Raises:
+        ValueError: If the extension is not supported.
+
     Example:
         >>> _validated_ext("flow.szplt")
         '.szplt'

@@ -173,12 +173,20 @@ _VALUE_SEP: str = "  "
 
 
 def _quote(s: str) -> str:
-    """Wrap *s* in double-quotes, escaping embedded double-quotes."""
+    """Wrap *s* in double-quotes, escaping embedded double-quotes.
+
+    Returns:
+        str: Stripped string.
+    """
     return '"' + str(s).replace('"', '\\"') + '"'
 
 
 def _unquote(s: str) -> str:
-    r"""Remove surrounding double-quotes and unescape internal ``\\"``."""
+    r"""Remove surrounding double-quotes and unescape internal ``\\"``.
+
+    Returns:
+        str: String without the surrounding quotes.
+    """
     s = s.strip()
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         return s[1:-1].replace('\\"', '"')
@@ -186,7 +194,11 @@ def _unquote(s: str) -> str:
 
 
 def _strip_comment(line: str) -> str:
-    """Remove a Tecplot ``#`` comment and trailing whitespace."""
+    """Remove a Tecplot ``#`` comment and trailing whitespace.
+
+    Returns:
+        str: The line without the comment and trailing whitespace.
+    """
     idx = line.find("#")
     return line[:idx].rstrip() if idx >= 0 else line.rstrip()
 
@@ -365,7 +377,11 @@ class TecplotDatWriter(TecplotWriter):
     # -- Validation checks and errror handling -----------------------------------------
 
     def _check_handle(self) -> io.TextIOWrapper:
-        """Return the file handle, raising if the file has been closed."""
+        """Return the file handle, raising if the file has been closed.
+
+        Raises:
+            ValueError: If the file has been closed.
+        """
         if self._fp is None:
             raise ValueError(f"I/O operation on closed file: '{self.path}'")
         return self._fp

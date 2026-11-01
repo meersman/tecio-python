@@ -90,5 +90,9 @@ def onera_szplt() -> Path:
 
 @pytest.fixture(scope="session", params=["szplt", "plt", "dat"])
 def onera_path(request: pytest.FixtureRequest) -> Path:
-    """Parametrised fixture: Onera file in each supported format."""
+    """Parametrised fixture: Onera file in each supported format.
+
+    Returns:
+        Path of the Onera file in the current format.
+    """
     return _TESTS_DIR / f"Onera.{request.param}"

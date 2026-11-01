@@ -28,14 +28,14 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 from create_test_data import (
-    create_FE_brick,
-    create_FE_lineseg,
-    create_FE_prism,
-    create_FE_pyramid,
-    create_FE_quad,
-    create_FE_tet,
-    create_FE_tri,
-    create_FE_two_bricks,
+    create_fe_brick,
+    create_fe_lineseg,
+    create_fe_prism,
+    create_fe_pyramid,
+    create_fe_quad,
+    create_fe_tet,
+    create_fe_tri,
+    create_fe_two_bricks,
     create_ordered,
     create_poly_octagon,
 )
@@ -124,7 +124,7 @@ class TestNewApi:
         - FLOAT + DOUBLE mixed in the same FE zone
         - FE arrays are 1-D and do not need Fortran ravel (node-indexed)
         """
-        x, y, nodes = create_FE_lineseg()
+        x, y, nodes = create_fe_lineseg()
         x = x.astype(np.float32)  # FLOAT
         y = y.astype(np.float32)  # FLOAT
         c = np.sin(2 * np.pi * x).astype(np.float64)  # DOUBLE
@@ -158,7 +158,7 @@ class TestNewApi:
         - ``tec_zone_var_write_int32_values``: the third distinct write path
         - node_map shape: (num_elements, 3) — rows are per-element, C-order
         """
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         x = x.astype(np.float32)  # FLOAT
         y = y.astype(np.float64)  # DOUBLE
         c = (np.sin(2 * np.pi * x) * 1000).astype(np.int32)  # INT32
@@ -192,7 +192,7 @@ class TestNewApi:
           the usual CFD convention, testing the reverse ordering
         - node_map shape: (num_elements, 4)
         """
-        x, y, nodes = create_FE_quad()
+        x, y, nodes = create_fe_quad()
         x = x.astype(np.float64)  # DOUBLE
         y = y.astype(np.float64)  # DOUBLE
         c = np.sin(2 * np.pi * x).astype(np.float32)  # FLOAT
@@ -227,7 +227,7 @@ class TestNewApi:
           typical CFD convention (compact grid, high-precision solution)
         - node_map shape: (num_elements, 4); ravel to 1-D before writing
         """
-        x, y, z, nodes = create_FE_tet()
+        x, y, z, nodes = create_fe_tet()
         x = x.astype(np.float32)  # FLOAT
         y = y.astype(np.float32)  # FLOAT
         z = z.astype(np.float32)  # FLOAT
@@ -268,7 +268,7 @@ class TestNewApi:
         - Degenerate elements are the standard Tecplot approach for pyramids
           and prisms when using the simple FE zone types
         """
-        x, y, z, nodes = create_FE_pyramid()
+        x, y, z, nodes = create_fe_pyramid()
         x = x.astype(np.float32)  # FLOAT
         y = y.astype(np.float64)  # DOUBLE
         z = z.astype(np.float32)  # FLOAT
@@ -309,7 +309,7 @@ class TestNewApi:
           the [-1, 1] float range to [0, 254] bytes
         - Useful for per-node color indices or boolean masks
         """
-        x, y, z, nodes = create_FE_prism()
+        x, y, z, nodes = create_fe_prism()
         x = x.astype(np.float32)  # FLOAT
         y = y.astype(np.float64)  # DOUBLE
         z = z.astype(np.float32)  # FLOAT
@@ -347,7 +347,7 @@ class TestNewApi:
         - node_map shape: (num_elements, 8); Tecplot brick node ordering
           follows the standard hex ordering (four bottom, four top)
         """
-        x, y, z, faces, nodes = create_FE_brick()
+        x, y, z, faces, nodes = create_fe_brick()
         x = x.astype(np.float32)  # FLOAT
         y = y.astype(np.float32)  # FLOAT
         z = z.astype(np.float64)  # DOUBLE
@@ -390,7 +390,7 @@ class TestNewApi:
           requires ``ValueLocation.CELL_CENTERED`` in value_locations
         - Face neighbors help Tecplot render smooth surfaces at element boundaries
         """
-        x, y, z, nodes, face_neighbors = create_FE_two_bricks()
+        x, y, z, nodes, face_neighbors = create_fe_two_bricks()
         x = x.astype(np.float32)
         y = y.astype(np.float32)
         z = z.astype(np.float32)
@@ -578,7 +578,7 @@ class TestClassicApi:
           order is header → data → connectivity
         - ``file_format=FileFormat.PLT``: explicit PLT format selection
         """
-        x, y, nodes = create_FE_lineseg()
+        x, y, nodes = create_fe_lineseg()
         c = np.sin(2 * np.pi * x).astype(np.float64)
         path = output_path("test_plt_zone_create_fe_lineseg.plt")
 
@@ -612,7 +612,7 @@ class TestClassicApi:
         - Reversing the typical precision: DOUBLE coordinates, FLOAT solution
         - FE arrays are 1-D; no Fortran ravel needed
         """
-        x, y, nodes = create_FE_tri()
+        x, y, nodes = create_fe_tri()
         x = x.astype(np.float64)
         y = y.astype(np.float64)
         c = np.sin(2 * np.pi * x).astype(np.float32)
@@ -642,7 +642,7 @@ class TestClassicApi:
         - ``ZoneType.FEQUADRILATERAL`` in the classic API
         - Standard precision pattern: FLOAT grid, DOUBLE solution
         """
-        x, y, nodes = create_FE_quad()
+        x, y, nodes = create_fe_quad()
         c = np.sin(2 * np.pi * x).astype(np.float64)
         path = output_path("test_plt_zone_create_fe_quad.plt")
 
@@ -671,7 +671,7 @@ class TestClassicApi:
         - Four ``tecdat142`` calls in dataset-variable order before ``tecnode142``
         - Compact grid (float32) + high-precision solution (float64)
         """
-        x, y, z, nodes = create_FE_tet()
+        x, y, z, nodes = create_fe_tet()
         c = np.sin(2 * np.pi * x).astype(np.float64)
         path = output_path("test_plt_zone_create_fe_tet.plt")
 
@@ -701,7 +701,7 @@ class TestClassicApi:
         - All float64 (is_double=True for every tecdat142 call) — maximum
           precision, useful when mixed float32/float64 isn't needed
         """
-        x, y, z, nodes = create_FE_pyramid()
+        x, y, z, nodes = create_fe_pyramid()
         c = np.sin(2 * np.pi * x).astype(np.float64)
         path = output_path("test_plt_zone_create_fe_pyramid.plt")
 
@@ -731,7 +731,7 @@ class TestClassicApi:
         - All float32 (is_double=False for every tecdat142 call) — minimum
           precision, smallest file size, suitable for visualization-only data
         """
-        x, y, z, nodes = create_FE_prism()
+        x, y, z, nodes = create_fe_prism()
         c = np.sin(2 * np.pi * x).astype(np.float32)
         path = output_path("test_plt_zone_create_fe_prism.plt")
 
@@ -760,7 +760,7 @@ class TestClassicApi:
         - Standard 8-node hex element in the classic API
         - Mixed precision: float32 grid coordinates, float64 solution field
         """
-        x, y, z, faces, nodes = create_FE_brick()
+        x, y, z, faces, nodes = create_fe_brick()
         c = np.sin(2 * np.pi * x).astype(np.float64)
         path = output_path("test_plt_zone_create_fe_brick.plt")
 
@@ -795,7 +795,7 @@ class TestClassicApi:
         - Full write order: ``teczne142`` → ``tecdat142`` × N → ``tecnode142``
           → ``tecface142`` → (next zone or tecend142)
         """
-        x, y, z, nodes, face_neighbors = create_FE_two_bricks()
+        x, y, z, nodes, face_neighbors = create_fe_two_bricks()
         c = np.sin(2 * np.pi * x).astype(np.float32)
         path = output_path("test_plt_zone_face_nbr.plt")
 
@@ -895,7 +895,6 @@ class TestClassicApi:
         - FEPOLYGON is the only way to represent truly arbitrary 2-D polygons;
           use this instead of FEQUADRILATERAL when elements have variable node counts
         """
-        # x, y, faces = create_FE_polygon()
         x, y, faces, left_elems, right_elems = create_poly_octagon()
         c = np.array([8], dtype=np.float32)
         path = output_path("test_plt_fe_polygon.plt")

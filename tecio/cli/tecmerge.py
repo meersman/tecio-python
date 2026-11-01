@@ -147,7 +147,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.tecmerge.main as tecmerge
+        from tecio.cli.tecmerge import main as tecmerge
 
         tecmerge(["part1.szplt", "part2.szplt", "--output", "combined.szplt"])
 
@@ -506,7 +506,7 @@ def _expand_inputs(patterns: list[str]) -> list[Path]:
         Deduplicated, ordered list of :class:`Path` objects.
 
     Raises:
-        SystemExit: If a pattern matches no files.
+        FileNotFoundError: If a pattern matches no files.
 
     """
     seen: set[Path] = set()

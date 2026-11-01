@@ -48,17 +48,17 @@ z = traj[:, 2]
 # Write Tecplot file
 with tecio.open("lorenz.szplt", "w") as szl:
     # Zone 1: full trajectory as ordered line
-    szl.write_ijk_zone(
+    szl.write_ordered_zone(
         title="Lorenz Attractor",
         variables=["x", "y", "z", "t", "tau"],
         data=[x, y, z],
-        passive_vars=[False, False, False, True, True],
+        passive_vars=["t", "tau"],
         strand_id=0,
     )
 
     # Zone 2+: trajectory animation (every 10th step)
     for i in tqdm(range(0, n_steps, 10), desc="Writing zones", bar_format=bf):
-        szl.write_ijk_zone(
+        szl.write_ordered_zone(
             title="Trajectory",
             variables=["x", "y", "z", "t", "tau"],
             data=[
@@ -72,11 +72,11 @@ with tecio.open("lorenz.szplt", "w") as szl:
             solution_time=i * dt,
         )
     for i in tqdm(range(0, n_steps, 10), desc="Writing zones", bar_format=bf):
-        szl.write_ijk_zone(
+        szl.write_ordered_zone(
             title="Particle",
             variables=["x", "y", "z", "t", "tau"],
             data=[x[i : i + 1], y[i : i + 1], z[i : i + 1]],
-            passive_vars=[False, False, False, True, True],
+            passive_vars=["t", "tau"],
             strand_id=2,
             solution_time=i * dt,
         )

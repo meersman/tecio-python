@@ -11,7 +11,7 @@ from importlib import metadata
 try:
     __version__ = metadata.version("tecio")
 except metadata.PackageNotFoundError:
-    __version__ = "0.4.0"
+    __version__ = "0.4.1"
 
 from . import cli, libtecio
 from ._constants import (

@@ -112,7 +112,7 @@ Examples:
 
     Call directly from a Python session::
 
-        import tecio.cli.tecslice.main as tecslice
+        from tecio.cli.tecslice import main as tecslice
 
         tecslice(["-i", "::2", "-o", "thinned.szplt", "flow.szplt"])
 
@@ -526,6 +526,9 @@ def _zone_sources(zone: TecplotZoneReader) -> dict[int, set[str]]:
 
     Connectivity sharing and boundary connections also make a zone depend on another
     one, with no variables in the set.
+
+    Returns:
+        dict: Mapping of source zone index to the names of the variables shared from it.
     """
     sources: dict[int, set[str]] = {}
     for var in zone.variables:
@@ -885,7 +888,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Slice a Tecplot file along IJK indices and/or solution time.
 
     Returns:
-        Exit code -- ``0`` on success, ``1`` on error.
+        int: Exit code ``0`` on success, ``1`` on error.
 
     """
     args = _parse_args(argv)

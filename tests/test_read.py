@@ -60,7 +60,11 @@ _EXTENSIONS: dict[str, str] = {"szl": "szplt", "plt": "plt", "dat": "dat"}
 
 @pytest.fixture(params=FORMATS)
 def fmt(request) -> str:
-    """Parametrize a test across every reader format (szl, plt, dat)."""
+    """Parametrize a test across every reader format (szl, plt, dat).
+
+    Returns:
+        Short format name string.
+    """
     return request.param
 
 
@@ -71,6 +75,9 @@ def onera_file(fmt: str, tests_dir: Path) -> Path:
     Skips (rather than fails) a format whose fixture file doesn't exist, so
     this suite degrades gracefully until ``Onera.plt``/``Onera.dat`` are
     confirmed present alongside ``Onera.szplt`` -- see module docstring.
+
+    Returns:
+        Onera file path in the current format.
     """
     path = tests_dir / f"Onera.{_EXTENSIONS[fmt]}"
     if not path.exists():
@@ -83,7 +90,11 @@ def _path(output_path: Callable, fmt: str, name: str) -> Path:
 
 
 def _write_text_fixture(output_path: Callable, name: str, text: str) -> Path:
-    """Write a hand-authored ASCII (.dat) fixture and return its path."""
+    """Write a hand-authored ASCII (.dat) fixture and return its path.
+
+    Returns:
+        File ouptut path.
+    """
     path = output_path(name)
     path.write_text(text, encoding="utf-8")
     return path
@@ -576,7 +587,11 @@ POLY_FORMATS: list[str] = ["plt", "dat"]
 
 @pytest.fixture
 def sphere_file(fmt: str, tests_dir: Path) -> Path:
-    """Resolve the per-format Sphere reference fixture (polyhedral zone)."""
+    """Resolve the per-format Sphere reference fixture (polyhedral zone).
+
+    Returns:
+        Path of the Sphere file in the current format.
+    """
     path = tests_dir / f"Sphere.{_EXTENSIONS[fmt]}"
     if not path.exists():
         pytest.skip(f"No Sphere fixture for format {fmt!r} at {path}")

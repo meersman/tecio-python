@@ -214,6 +214,9 @@ def _field_data_to_aux(field_data: vtkFieldData) -> dict[str, str]:
 
     Only the first value of each array is kept, since Tecplot aux items are single
     strings; an unnamed array is skipped.
+
+    Returns:
+        dict: Mapping of array name to its first value as a string.
     """
     aux: dict[str, str] = {}
     for i in range(field_data.GetNumberOfArrays()):
@@ -236,6 +239,10 @@ def _split_variable_aux(
     ``"<variable name>::<key>"``; this reverses that only for names whose prefix
     matches a real variable, so ordinary dataset aux (which may happen to contain
     "::") is left alone.
+
+    Returns:
+        tuple: Tuple of the dataset-level aux dict and the per-variable aux dicts, keyed by
+            variable name.
     """
     dataset_aux: dict[str, str] = {}
     var_aux: dict[str, dict[str, str]] = {}
@@ -365,7 +372,11 @@ def _structured_dims(
 def _build_ordered_zone(
     title: str, dataset: vtkImageData | vtkRectilinearGrid | vtkStructuredGrid
 ) -> _ZoneBuild:
-    """Build an ORDERED zone from a structured VTK dataset."""
+    """Build an ORDERED zone from a structured VTK dataset.
+
+    Returns:
+        The ordered zone description.
+    """
     dims = _structured_dims(dataset)
     x, y, z = _structured_coordinates(dataset, dims)
     cell_dims = tuple(max(n - 1, 1) for n in dims)
@@ -461,7 +472,11 @@ def _csr_offsets(counts: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
 
 
 def _next_in_loop(offsets: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
-    """Return, for each node of CSR loops, the position of the next node in its loop."""
+    """Return, for each node of CSR loops, the position of the next node in its loop.
+
+    Returns:
+        NDArray: Position of the next node in the loop for every node.
+    """
     following = np.arange(offsets[-1]) + 1
     nonempty = offsets[1:] > offsets[:-1]
     following[offsets[1:][nonempty] - 1] = offsets[:-1][nonempty]
@@ -671,6 +686,9 @@ def _build_fe_zones(title: str, dataset: vtkPointSet) -> list[_ZoneBuild]:
     one zone per type, suffixed with the Tecplot zone type name so each is
     identifiable. Unsupported cell types (triangle strip, vertex, wedge, pyramid,
     ...) are skipped with a printed warning.
+
+    Returns:
+        list: The zones, one per supported cell type.
     """
     grid = _as_unstructured_grid(dataset)
     types = _cell_type_array(grid)
@@ -755,7 +773,11 @@ def _build_fe_zones(title: str, dataset: vtkPointSet) -> list[_ZoneBuild]:
 
 
 def _build_zones(name: str, dataset: vtkDataSet) -> list[_ZoneBuild]:
-    """Build the Tecplot zone(s) for one input block, or ``[]`` if unsupported."""
+    """Build the Tecplot zone(s) for one input block, or ``[]`` if unsupported.
+
+    Returns:
+        list: The zones for the block, empty if the dataset type is unsupported.
+    """
     if isinstance(dataset, (vtkImageData, vtkRectilinearGrid, vtkStructuredGrid)):
         return [_build_ordered_zone(name, dataset)]
     if isinstance(dataset, vtkPointSet):
@@ -889,7 +911,11 @@ class TecplotWriter(VTKPythonAlgorithmBase):
         self.Update()
 
     def RequestData(self, request: Any, inInfoVec: Any, outInfoVec: Any) -> int:
-        """Write the current input to :attr:`_filename`."""
+        """Write the current input to :attr:`_filename`.
+
+        Returns:
+            int: ``1`` on success, ``0`` if nothing was written (the reason is printed).
+        """
         if tecio is None:
             print(
                 "[TecplotTecioWriter] The 'tecio' package is not importable in "

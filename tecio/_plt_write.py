@@ -67,6 +67,9 @@ def _infer_data_type(dt: DataType | np.dtype) -> DataType:
     FLOAT and DOUBLE are supported; all integer types are upcast to DOUBLE.  precision
     is promoted to ``FLOAT``; 64-bit integers are promoted to ``INT32``; ``int8`` and
     ``uint8`` map to ``BYTE``.
+
+    Raises:
+        ValueError: If the dtype is not supported.
     """
     closest: dict[np.dtype, DataType] = {
         np.dtype(np.float64): DataType.DOUBLE,

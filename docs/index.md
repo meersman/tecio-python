@@ -48,11 +48,16 @@ PLT format, particularly for large unstructured meshes.
 
 3. **[API Reference](api/index.md)**
    - [`tecio.open`](api/index.md) — open a file for reading, writing, or appending
-     - [`AppendWrite`](api/append_write.md) — append zones to an existing file (`mode='a'`)
-     - [`AppendReadWrite`](api/append_read_write.md) — append and read in the same session (`mode='a+'`)
-   - **[Readers](api/readers.md)** — the shared reader interface, `ZoneList`/`VariableList`, and each format's reader class
-   - **[Writers](api/writers.md)** — the shared writer interface, order-of-operations, and each format's writer class
-   - **[Constants](api/constants.md)** — `ZoneType`, `DataType`, and the rest of Tecplot's enumerated constants
+     - [`AppendWrite`](api/append_write.md) — append zones to an existing file
+       (`mode='a'`)
+     - [`AppendReadWrite`](api/append_read_write.md) — append and read in the
+       same session (`mode='a+'`)
+   - **[Readers](api/readers.md)** — the shared reader interface,
+       `ZoneList`/`VariableList`, and each format's reader class
+   - **[Writers](api/writers.md)** — the shared writer interface,
+       order-of-operations, and each format's writer class
+   - **[Constants](api/constants.md)** — `ZoneType`, `DataType`, and the rest
+       of Tecplot's enumerated constants
    - **[C Function Wrappers](api/libtecio.md)** — low-level TecIO C library bindings
      - [SZL Read Functions](api/libtecio_szl_read.md)
      - [SZL Write Functions](api/libtecio_szl_write.md)
@@ -60,10 +65,14 @@ PLT format, particularly for large unstructured meshes.
 
 4. **[Console Scripts](api/cli.md)** — command-line tools
 
-5. **Demos**
+5. **Third Party Plugins**
+   - [ParaView](plugins/paraview.md) — use `tecio-python` to natively read and
+     write Tecplot files in ParaView.
+   - [MATLAB](plugins/matlab) — complementary functions to manipulate and plot
+     Tecplot data converted to MATLAB with {mod}`~tecio.cli.tec2mat`.
+
+6. **Demos**
    - [Lorenz Attractor Animation](_demos/lorenz/lorenz.md)
-   - [Gravity Waves Around Binary Black Holes](_demos/gravity_waves/gravity_waves.md)
-   - [Spectral Incompressible Navier–Stokes (Kelvin–Helmholtz)](_demos/simple_spectral_solver/simple_spectral.md)
 
 ---
 
@@ -82,10 +91,17 @@ genindex
 
 ```{toctree}
 :hidden:
+:maxdepth: 2
+:caption: Plugins
+
+plugins/paraview
+plugins/matlab
+```
+
+```{toctree}
+:hidden:
 :maxdepth: 1
 :caption: Demos
 
 _demos/lorenz/lorenz
-_demos/gravity_waves/gravity_waves
-_demos/simple_spectral_solver/simple_spectral
 ```
