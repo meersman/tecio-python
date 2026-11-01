@@ -539,7 +539,9 @@ def _polygon_face_map(
     return {
         "face_nodes": np.column_stack((a[left_edge], b[left_edge])).ravel(),
         "face_left_elements": cell[left_edge],
-        "face_right_elements": np.where(right_edge >= 0, cell[np.maximum(right_edge, 0)], -1),
+        "face_right_elements": np.where(
+            right_edge >= 0, cell[np.maximum(right_edge, 0)], -1
+        ),
     }
 
 
