@@ -1354,8 +1354,8 @@ class TecplotReader(VTKPythonAlgorithmBase):
         num_elements = int(zone.num_elements)
         face_nodes, face_left, face_right = (
             zone.face_nodes,
-            zone.face_left,
-            zone.face_right,
+            zone.face_left_elements,
+            zone.face_right_elements,
         )
         if face_nodes is None or len(face_nodes) == 0:
             raise _UnsupportedZoneError("zone has no face connectivity")

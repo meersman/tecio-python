@@ -502,8 +502,9 @@ def _polygon_face_map(
         points: ``(n, 3)`` coordinates indexed by node.
 
     Returns:
-        ``face_nodes`` (flat, two per face), ``face_left``, and ``face_right`` (``-1``
-        for none), in terms of the node ids in *nodes*.
+        dict:``face_nodes`` (flat, two per face), ``face_left_elements``, and
+            ``face_right_elements`` (``-1`` for none), in terms of the node ids in
+            *nodes*.
 
     Raises:
         ValueError: If an edge is used by more than two cells.
@@ -537,8 +538,8 @@ def _polygon_face_map(
     left_edge, right_edge = left_edge[arrange], right_edge[arrange]
     return {
         "face_nodes": np.column_stack((a[left_edge], b[left_edge])).ravel(),
-        "face_left": cell[left_edge],
-        "face_right": np.where(right_edge >= 0, cell[np.maximum(right_edge, 0)], -1),
+        "face_left_elements": cell[left_edge],
+        "face_right_elements": np.where(right_edge >= 0, cell[np.maximum(right_edge, 0)], -1),
     }
 
 
@@ -615,8 +616,9 @@ def _polyhedron_face_map(
         points: ``(n, 3)`` coordinates indexed by node.
 
     Returns:
-        ``face_nodes`` (flat), ``face_node_counts``, ``face_left`` and ``face_right``
-        (``-1`` for none), in terms of the node ids in *nodes*.
+        dict: ``face_nodes`` (flat), ``face_node_counts``, ``face_left_elements`` and
+            ``face_right_elements`` (``-1`` for none), in terms of the node ids in
+            *nodes*.
 
     Raises:
         ValueError: If a face is listed by more than two cells.
@@ -673,8 +675,8 @@ def _polyhedron_face_map(
     return {
         "face_nodes": nodes[_gather_ranges(face_start[left], counts)],
         "face_node_counts": counts,
-        "face_left": cell[left],
-        "face_right": np.where(right >= 0, cell[np.maximum(right, 0)], -1),
+        "face_left_elements": cell[left],
+        "face_right_elements": np.where(right >= 0, cell[np.maximum(right, 0)], -1),
     }
 
 
