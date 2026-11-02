@@ -31,11 +31,17 @@ format stores complex multi-block and time-dependent field data efficiently.
 
 ## Loading a plugin
 
-1. In ParaView, open **Tools > Manage Plugins...**.
-2. Click **Load New...** and select `TecplotTecioReader.py` or
-   `TecplotTecioWriter.py`.
-3. Expand the plugin in the list and tick **Auto Load** to load it each time
-   ParaView starts.
+External plugins may be automatically added and loaded by setting the
+`PV_PLUGIN_PATH` environment variable or following the directions below.
+
+```bash
+export PV_PLUGIN_PATH=/path/to/share/tecio/plugins/paraview
+```
+
+1. In ParaView, open **Tools > Manage Plugins...**.  2. Click **Load New...**
+and select `TecplotTecioReader.py` or `TecplotTecioWriter.py`.  3. Expand the
+plugin in the list and tick **Auto Load** to load it each time ParaView
+starts.
 
 Once loaded, the reader handles the supported extensions in **File > Open** and
 the writer is offered under **File > Save Data**.

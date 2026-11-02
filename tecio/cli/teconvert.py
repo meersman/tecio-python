@@ -268,7 +268,7 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
             writer.write_fe_zone(
                 zone_type=zt,
                 data=data,
-                node_map=None if con_sharing else zone.node_map,
+                node_map=zone.node_map if con_sharing is None else None,
                 con_sharing=con_sharing,
                 **fe_kw,
             )

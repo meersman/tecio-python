@@ -1,9 +1,9 @@
 # tecio
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![CI](https://github.com/meersman/tecio/actions/workflows/ci.yml/badge.svg)](https://github.com/meersman/tecio/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/meersman/tecio/branch/main/graph/badge.svg)](https://codecov.io/gh/meersman/tecio)
-[![Docs](https://github.com/meersman/tecio/actions/workflows/docs.yml/badge.svg)](https://meersman.github.io/tecio)
+[![CI](https://github.com/meersman/tecio-python/actions/workflows/ci.yml/badge.svg)](https://github.com/meersman/tecio/actions/workflows/ci.yml)
+[![Codecov](https://codecov.io/gh/meersman/tecio-python/branch/main/graph/badge.svg)](https://codecov.io/gh/meersman/tecio-python)
+[![Docs](https://github.com/meersman/tecio-python/actions/workflows/docs.yml/badge.svg)](https://meersman.github.io/tecio-python)
 [![PyPI](https://img.shields.io/pypi/v/tecio-python)](https://pypi.org/project/tecio-python)
 [![Python](https://img.shields.io/pypi/pyversions/tecio-python)](https://pypi.org/project/tecio-python)
 
@@ -95,13 +95,13 @@ Contributions are welcome (see [CONTRIBUTING.md](CONTRIBUTING.md) for details).
 
 - [Tecplot data format specification](https://tecplot.azureedge.net/products/360/current/360-data-format.html)
 - [TecIO library](https://tecplot.com/products/tecio-library/)
-- [Full documentation](https://meersman.github.io/tecio)
+- [Full documentation](https://meersman.github.io/tecio-python)
 
 ---
 
 ## Disclaimer
 
-This project is an independent open source library and is not affiliated
-with, endorsed by, or supported by Tecplot, Inc. in any way. Tecplot and
-TecIO are trademarks of Tecplot, Inc. Use of the TecIO library requires a
-separate license from Tecplot, Inc.
+This project is an independent open source library and is not affiliated with,
+endorsed by, or supported by Tecplot, Inc. in any way. Tecplot and TecIO are
+trademarks of Tecplot, Inc. Use of the TecIO library requires separatly
+aquiring the source code or compiled binaries from Tecplot, Inc.
