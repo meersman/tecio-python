@@ -148,13 +148,13 @@ class FeCellShape(Enum):
          - 3D four-node element.
        * - ``HEXAHEDRON``
          - ``4``
-         - 3D six-node element.
+         - 3D eight-node element.
        * - ``PYRAMID``
          - ``5``
          - 3D five-node element.
        * - ``PRISM``
          - ``6``
-         - 3D eight-node element.
+         - 3D six-node element.
     """
 
     BAR = 0

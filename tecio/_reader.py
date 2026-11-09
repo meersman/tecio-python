@@ -58,6 +58,7 @@ from ._constants import (
     ZoneType,
 )
 from ._containers import VariableList, ZoneList, select_variable_arrays
+from ._elements import faces_by_element, nodes_by_element
 from ._utils import public_dir
 
 # Nodes per element for the standard finite-element zone types. ORDERED zones are
@@ -1225,6 +1226,38 @@ class TecplotPolyZoneReader(TecplotZoneReader):
         if self._num_boundary_connections == 0:
             return np.zeros(0, dtype=np.int64)
         return self._array("boundary_connection_zones")
+
+    def element_faces(self) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """Return the faces of every element as ``(offsets, faces)``.
+
+        The faces of element ``e`` are ``faces[offsets[e]:offsets[e + 1]]``, in ascending
+        face order. They come from :attr:`face_left_elements` and
+        :attr:`face_right_elements`. A side that is no element of this zone (``-1`` or a
+        boundary face reference) is skipped, so a face next to another zone is listed
+        only for its own element. The arrays are computed on each call, not cached.
+
+        Returns:
+            The ``offsets`` with shape ``(num_elements + 1,)`` and the flat ``faces``.
+        """
+        return faces_by_element(
+            self.face_left_elements, self.face_right_elements, self._num_elements
+        )
+
+    def element_nodes(self) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """Return the distinct nodes of every element as ``(offsets, nodes)``.
+
+        The nodes of element ``e`` are ``nodes[offsets[e]:offsets[e + 1]]``. They are the
+        nodes of the element's faces with repeats removed, in ascending order. That is a
+        set, not a cell node order, because a polyhedron has no natural node order. The
+        arrays are computed on each call, not cached.
+
+        Returns:
+            The ``offsets`` with shape ``(num_elements + 1,)`` and the flat ``nodes``.
+        """
+        offsets, faces = self.element_faces()
+        return nodes_by_element(
+            self.face_nodes, self.face_node_offsets, offsets, faces, self._num_nodes
+        )
 
 
 # ======================================================================================

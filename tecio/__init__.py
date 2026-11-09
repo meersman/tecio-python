@@ -30,6 +30,16 @@ from ._constants import (
 from ._containers import VariableList, ZoneList
 from ._dat_read import TecplotDatReader
 from ._dat_write import TecplotDatWriter
+from ._elements import (
+    UNKNOWN_SHAPE,
+    cell_face_neighbors,
+    classify_cells,
+    collapse_cells,
+    collapsed_zone_type,
+    degenerate_edges,
+    expand_cells,
+    shape_counts,
+)
 from ._io import (
     AppendReadWrite,
     AppendWrite,
@@ -62,6 +72,17 @@ from ._writer import EmptyZoneWarning, TecplotWriter
 # Ensure these display as their canonical public name in docs and help(),
 # rather than the private module they're actually defined in.
 open.__module__ = "tecio"
+for _func in (
+    cell_face_neighbors,
+    classify_cells,
+    collapse_cells,
+    collapsed_zone_type,
+    degenerate_edges,
+    expand_cells,
+    shape_counts,
+):
+    _func.__module__ = "tecio"
+del _func
 for _cls in (
     AppendWrite,
     AppendReadWrite,
@@ -129,6 +150,14 @@ __all__ = [
     "TecplotPltWriter",
     "TecplotDatWriter",
     "EmptyZoneWarning",
+    "UNKNOWN_SHAPE",
+    "cell_face_neighbors",
+    "classify_cells",
+    "collapse_cells",
+    "collapsed_zone_type",
+    "degenerate_edges",
+    "expand_cells",
+    "shape_counts",
     "Boolean",
     "DataPacking",
     "DataType",

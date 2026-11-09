@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Node-map utilities for classic finite-element zones, importable from `tecio`:
+  - `classify_cells`, `shape_counts` and `degenerate_edges` detect cells
+    written as `FEBRICK` or `FEQUADRILATERAL` with repeated node indices
+    (tetrahedra, pyramids, prisms, triangles).
+  - `collapsed_zone_type` and `collapse_cells` collapse such cells to their
+    natural zone type (`FEBRICK` to `FETETRAHEDRON`, `FEQUADRILATERAL` to
+    `FETRIANGLE`) and keep the cell handedness. `expand_cells` goes the other
+    way.
+  - `cell_face_neighbors` finds the cell across every face of every cell from
+    the node map alone, for triangles, quadrilaterals, tetrahedra and
+    bricks. It returns `-1` for boundary faces.
+- `TecplotPolyZoneReader.element_faces()` and `element_nodes()` return the
+  faces and the distinct nodes of every element of a polygon or polyhedron
+  zone as `(offsets, flat_array)`, built from the face left and right
+  elements.
+- `tecelretyp` console script retypes FE zones whose cells are all upcast with
+  repeated nodes, which gives a more compact node map and more descriptive
+  zone metadata. It supports `--dry-run`, `--check`, `-z/--zones`,
+  `--drop-face-neighbors`, `-o` and `-f`.
+
 ---
 
 ```{include} changelog/v0.4.1.md

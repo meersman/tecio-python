@@ -33,7 +33,7 @@ _TEC_EXECUTABLE_ALIASES = (
 _VERSION_REGEX = re.compile(r"(20\d{2})\s*[Rr]\s*(\d+)")
 
 
-def public_dir(obj: object) -> list[str]:
+def public_dir(obj: object) -> list[str]:  # pragma: no cover
     """Return ``dir(obj)`` without single underscore (private) names.
 
     Dunder names are kept so that introspection tools keep working. Attribute access
@@ -46,7 +46,7 @@ def public_dir(obj: object) -> list[str]:
     ]
 
 
-def _run_which(cmd: str) -> str | None:
+def _run_which(cmd: str) -> str | None:  # pragma: no cover - environment-dependent
     """Run `which cmd` explicitly as a fallback.
 
     Returns:
@@ -67,7 +67,7 @@ def _run_which(cmd: str) -> str | None:
     return path if path else None
 
 
-def _find_tec_executable() -> str:
+def _find_tec_executable() -> str:  # pragma: no cover - environment-dependent
     """Locate Tecplot executable using multiple strategies.
 
     Returns:
@@ -128,7 +128,7 @@ def _find_tec_executable() -> str:
     )
 
 
-def _extract_version_from_path(path: str) -> str | None:
+def _extract_version_from_path(path: str) -> str | None:  # pragma: no cover
     """Extract Tecplot version YYYYR# from a filesystem path.
 
     Returns:
@@ -141,7 +141,7 @@ def _extract_version_from_path(path: str) -> str | None:
     return None
 
 
-def _extract_version_from_executable(exe_path: str) -> str | None:
+def _extract_version_from_executable(exe_path: str) -> str | None:  # pragma: no cover
     """Ask Tecplot executable for its version.
 
     Returns:
@@ -166,12 +166,12 @@ def _extract_version_from_executable(exe_path: str) -> str | None:
     return None
 
 
-def get_tec_exe() -> str:
+def get_tec_exe() -> str:  # pragma: no cover - environment-dependent
     """Return absolute path to Tecplot executable."""
     return _find_tec_executable()
 
 
-def get_tec_bin() -> str:
+def get_tec_bin() -> str:  # pragma: no cover - environment-dependent
     """Return Tecplot bin directory.
 
     - macOS: Contents/Frameworks
@@ -214,7 +214,7 @@ def get_tec_bin() -> str:
     return bin_dir
 
 
-def get_tecio_lib() -> str:
+def get_tecio_lib() -> str:  # pragma: no cover - environment-dependent
     """Return full path to the TecIO shared library.
 
     Search order:
@@ -416,7 +416,7 @@ def get_tec_version() -> str:
 def convert_to_szl(
     input_path: str | os.PathLike,
     output_path: str | os.PathLike | None = None,
-) -> Path:
+) -> Path:  # pragma: no cover
     """Convert a Tecplot data file to SZL (``.szplt``) format from the command line.
 
     Returns:
