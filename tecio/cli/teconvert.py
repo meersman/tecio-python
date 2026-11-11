@@ -87,6 +87,7 @@ import numpy as np
 
 from .. import (
     TecplotFEZoneReader,
+    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotReader,
@@ -281,9 +282,18 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
                 **({} if con_sharing is not None else poly_face_kwargs(zone)),
                 **common_kw,
             )
+        elif isinstance(zone, TecplotMixedZoneReader):
+            con_sharing = zone.shared_connectivity
+            writer.write_mixed_zone(
+                data=data,
+                cell_shapes=None if con_sharing is not None else zone.section_shapes,
+                node_maps=None if con_sharing is not None else zone.node_maps,
+                con_sharing=con_sharing,
+                **common_kw,
+            )
         else:
             raise NotImplementedError(
-                f"Zone '{zone.title}' is not an ordered, FE or poly zone; "
+                f"Zone '{zone.title}' is not an ordered, FE, mixed or poly zone; "
                 "conversion is not supported for it."
             )
 

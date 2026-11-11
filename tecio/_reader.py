@@ -2,9 +2,9 @@
 
 Every format's reader (SZL, PLT, DAT) exposes the same interface: :class:`TecplotReader`
 (the open file/dataset), :class:`TecplotZoneReader` (one zone, split into
-:class:`TecplotOrderedZoneReader`, :class:`TecplotFEZoneReader`, and
-:class:`TecplotPolyZoneReader` since the topologies don't share properties like
-dimensions or connectivity),
+:class:`TecplotOrderedZoneReader`, :class:`TecplotFEZoneReader`,
+:class:`TecplotMixedZoneReader`, and :class:`TecplotPolyZoneReader` since the
+topologies don't share properties like dimensions or connectivity),
 :class:`TecplotVariableReader` (one variable within a zone, not split by value location
 or zone topology, neither changes which properties exist, only the shape
 ``get_values()`` returns, which the method already computes from
@@ -53,6 +53,7 @@ from ._constants import (
     DataPacking,
     DataType,
     FaceNeighborMode,
+    FeCellShape,
     FileType,
     ValueLocation,
     ZoneType,
@@ -958,6 +959,126 @@ class TecplotFEZoneReader(TecplotZoneReader):
             f"{type(self).__name__} reports face-neighbor metadata but "
             "does not implement _load_face_connections."
         )
+
+
+# ======================================================================================
+# TecplotMixedZoneReader
+# ======================================================================================
+
+
+class TecplotMixedZoneReader(TecplotZoneReader):
+    """Read-only handle to one FEMIXED (mixed finite-element) zone.
+
+    A mixed zone holds 1 to 16 sections. Every cell in a section has the same shape,
+    and all sections share one spatial dimension (all line, all surface or all volume
+    cells). Cell numbering runs through the sections in order, so cell-centered
+    variables hold ``num_elements`` values, the cells of section 0 first. All indices
+    are 0-based.
+
+    Args:
+        zone_index: 0-based zone index within the dataset.
+        title: Zone title.
+        solution_time: Solution time, 0.0 for static data.
+        strand_id: Strand ID, 0 for static data.
+        datapacking: On-disk value layout.
+        num_nodes: Number of nodes/points.
+        section_shapes: Cell shape of each section.
+        section_num_elements: Number of cells in each section.
+        shared_connectivity: 0-based source zone index if this zone's
+            connectivity is shared, else None.
+    """
+
+    __slots__ = (
+        "_num_nodes",
+        "_section_shapes",
+        "_section_num_elements",
+        "_shared_connectivity",
+        "_node_maps_cache",
+    )
+    _num_nodes: int
+    _section_shapes: tuple[FeCellShape, ...]
+    _section_num_elements: tuple[int, ...]
+    _shared_connectivity: int | None
+    _node_maps_cache: tuple[npt.NDArray[np.int64], ...] | None
+
+    def __init__(
+        self,
+        zone_index: int,
+        title: str,
+        solution_time: float,
+        strand_id: int,
+        datapacking: DataPacking,
+        num_nodes: int,
+        section_shapes: tuple[FeCellShape, ...],
+        section_num_elements: tuple[int, ...],
+        shared_connectivity: int | None,
+    ) -> None:
+        super().__init__(
+            zone_index=zone_index,
+            title=title,
+            zone_type=ZoneType.FEMIXED,
+            solution_time=solution_time,
+            strand_id=strand_id,
+            datapacking=datapacking,
+        )
+        object.__setattr__(self, "_num_nodes", num_nodes)
+        object.__setattr__(self, "_section_shapes", section_shapes)
+        object.__setattr__(self, "_section_num_elements", section_num_elements)
+        object.__setattr__(self, "_shared_connectivity", shared_connectivity)
+        object.__setattr__(self, "_node_maps_cache", None)
+
+    def _repr_size(self) -> str:
+        return (
+            f"N={self._num_nodes}, E={self.num_elements}, S={len(self._section_shapes)}"
+        )
+
+    @property
+    def num_nodes(self) -> int:
+        """Number of nodes/points."""
+        return self._num_nodes
+
+    @property
+    def num_elements(self) -> int:
+        """Total number of elements/cells over all sections."""
+        return sum(self._section_num_elements)
+
+    @property
+    def num_sections(self) -> int:
+        """Number of sections, 1 to 16."""
+        return len(self._section_shapes)
+
+    @property
+    def section_shapes(self) -> tuple[FeCellShape, ...]:
+        """Cell shape of each section."""
+        return self._section_shapes
+
+    @property
+    def section_num_elements(self) -> tuple[int, ...]:
+        """Number of cells in each section."""
+        return self._section_num_elements
+
+    @property
+    def shared_connectivity(self) -> int | None:
+        """0-based source zone index if connectivity is shared, else None."""
+        return self._shared_connectivity
+
+    @property
+    def node_maps(self) -> tuple[npt.NDArray[np.int64], ...]:
+        """Node connectivity of each section, ``(section_num_elements, nodes)`` arrays.
+
+        The arrays are views of one allocation, loaded on first access. Node indices are
+        0-based. Passing :attr:`section_shapes` and :attr:`node_maps` to
+        :meth:`~tecio.TecplotSzlWriter.write_mixed_zone` writes the zone back.
+        """
+        node_maps = self._node_maps_cache
+        if node_maps is None:
+            node_maps = self._load_node_maps()
+            object.__setattr__(self, "_node_maps_cache", node_maps)
+        return node_maps
+
+    @abstractmethod
+    def _load_node_maps(self) -> tuple[npt.NDArray[np.int64], ...]:
+        """Read this zone's per-section connectivity. Called at most once, lazily."""
 
 
 # ======================================================================================

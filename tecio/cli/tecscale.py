@@ -107,6 +107,7 @@ import numpy as np
 
 from .. import (
     TecplotFEZoneReader,
+    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotSzlWriter,
@@ -494,10 +495,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                             con_sharing=con_sharing,
                             **fe_kw,
                         )
+                    elif isinstance(zone, TecplotMixedZoneReader):
+                        con_sharing = zone.shared_connectivity
+                        writer.write_mixed_zone(
+                            data=data,
+                            cell_shapes=(
+                                None if con_sharing is not None else zone.section_shapes
+                            ),
+                            node_maps=None
+                            if con_sharing is not None
+                            else zone.node_maps,
+                            con_sharing=con_sharing,
+                            **common_kw,
+                        )
                     else:
                         raise NotImplementedError(
                             f"Zone '{zone.title}' is neither an ordered nor a "
-                            "classic FE or poly zone; scaling is not supported for it."
+                            "classic FE, mixed or poly zone; scaling is not supported "
+                            "for it."
                         )
 
     except Exception as exc:  # noqa: BLE001

@@ -43,7 +43,6 @@ class FileFormat(Enum):
          - ``1``
          - SZL subzone-loadable format.
     """
-
     PLT = 0
     SZPLT = 1
 
@@ -68,7 +67,6 @@ class FileType(Enum):
          - ``2``
          - Solution variables only.
     """
-
     FULL = 0
     GRID = 1
     SOLUTION = 2
@@ -112,7 +110,6 @@ class ZoneType(Enum):
          - ``8``
          - Mixed finite-element types.
     """
-
     ORDERED = 0
     FELINESEG = 1
     FETRIANGLE = 2
@@ -156,7 +153,6 @@ class FeCellShape(Enum):
          - ``6``
          - 3D six-node element.
     """
-
     BAR = 0
     TRIANGLE = 1
     QUADRILATERAL = 2
@@ -189,7 +185,6 @@ class FaceNeighborMode(Enum):
          - ``3``
          - Each face may have multiple neighbors in any zone (hanging nodes).
     """
-
     LOCAL_ONE_TO_ONE = 0
     LOCAL_ONE_TO_MANY = 1
     GLOBAL_ONE_TO_ONE = 2
@@ -213,7 +208,6 @@ class ValueLocation(Enum):
          - ``1``
          - Values stored at grid nodes.
     """
-
     CELL_CENTERED = 0
     NODAL = 1
 
@@ -240,7 +234,6 @@ class DataPacking(Enum):
          - One contiguous block per variable containing all node/cell values.
            Tecplot default; faster for variable-at-a-time access patterns.
     """
-
     POINT = 0
     BLOCK = 1
 
@@ -271,7 +264,6 @@ class DataType(Enum):
          - ``5``
          - 8-bit unsigned integer.
     """
-
     FLOAT = 1
     DOUBLE = 2
     INT32 = 3
@@ -296,7 +288,6 @@ class VarStatus(Enum):
          - ``1``
          - Variable has no data in this zone.
     """
-
     ACTIVE = 0
     PASSIVE = 1
 
@@ -318,7 +309,6 @@ class Boolean(Enum):
          - ``1``
          - Logical true.
     """
-
     FALSE = 0
     TRUE = 1
 
@@ -340,6 +330,5 @@ class Debug(Enum):
          - ``1``
          - Debug output enabled.
     """
-
     FALSE = 0
     TRUE = 1

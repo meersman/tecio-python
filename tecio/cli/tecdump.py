@@ -79,7 +79,12 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from .. import TecplotFEZoneReader, TecplotOrderedZoneReader, TecplotPolyZoneReader
+from .. import (
+    TecplotFEZoneReader,
+    TecplotMixedZoneReader,
+    TecplotOrderedZoneReader,
+    TecplotPolyZoneReader,
+)
 from .. import open as tecio_open
 
 
@@ -212,6 +217,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     elif isinstance(zone, TecplotFEZoneReader):
                         print(f"  Num Nodes            : {zone.num_nodes}")
                         print(f"  Num Elements         : {zone.num_elements}")
+                    elif isinstance(zone, TecplotMixedZoneReader):
+                        print(f"  Num Nodes            : {zone.num_nodes}")
+                        print(f"  Num Elements         : {zone.num_elements}")
+                        print(f"  Num Sections         : {zone.num_sections}")
+                        for k, (shape, count) in enumerate(
+                            zip(
+                                zone.section_shapes,
+                                zone.section_num_elements,
+                                strict=True,
+                            )
+                        ):
+                            print(f"  Section {k:2}           : {shape.name}, {count}")
+                        print(f"  Shared Connectivity  : {zone.shared_connectivity}")
                     elif isinstance(zone, TecplotPolyZoneReader):
                         print(f"  Num Nodes            : {zone.num_nodes}")
                         print(f"  Num Elements         : {zone.num_elements}")
@@ -260,6 +278,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 separator=", ",
                             )
                             print(f"  Face Connections     : {value_str}")
+
+                    # Show the section node maps for mixed zones
+                    if isinstance(zone, TecplotMixedZoneReader):
+                        for k, node_map in enumerate(zone.node_maps):
+                            _print_array(f"Section {k} Node Map", node_map)
 
                     # Show the face map and boundary connections for poly zones. Zones
                     # that share connectivity print the face map of their source zone.

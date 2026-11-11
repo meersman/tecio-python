@@ -27,6 +27,7 @@ from ._constants import (
     DataPacking,
     DataType,
     FaceNeighborMode,
+    FeCellShape,
     FileType,
     ValueLocation,
     ZoneType,
@@ -936,6 +937,37 @@ class TecplotDatWriter(TecplotWriter):
                 ),
                 num_face_connections=num_face_connections or None,
             )
+        )
+
+    def write_mixed_zone(
+        self,
+        data: Sequence[npt.ArrayLike],
+        cell_shapes: Sequence[FeCellShape | int | str] | None = None,
+        node_maps: Sequence[npt.ArrayLike] | None = None,
+        *,
+        title: str | None = None,
+        variables: list[str] | None = None,
+        value_locations: Sequence[ValueLocation] | None = None,
+        passive_vars: PassiveVarsSpec | None = None,
+        var_sharing: VarSharingSpec | None = None,
+        con_sharing: int | None = None,
+        solution_time: float = 0.0,
+        strand_id: int = 0,
+        aux: dict[str, Any] | None = None,
+        datapacking: DataPacking | str = DataPacking.BLOCK,
+    ) -> None:
+        """Not supported: DAT files cannot hold mixed (FEMIXED) zones.
+
+        The signature matches :meth:`TecplotSzlWriter.write_mixed_zone` so every writer
+        exposes the same interface.
+
+        Raises:
+            NotImplementedError: Always. Write a ``.szplt`` file instead, see
+                :meth:`TecplotSzlWriter.write_mixed_zone`.
+        """
+        raise NotImplementedError(
+            "The DAT file format does not support mixed finite-element (FEMIXED) "
+            "zones. Write a .szplt file instead."
         )
 
     def write_poly_zone(

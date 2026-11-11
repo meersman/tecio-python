@@ -189,6 +189,7 @@ import numpy as np
 
 from .. import (
     TecplotFEZoneReader,
+    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotReader,
@@ -370,6 +371,17 @@ def _zone_to_dict(zone: TecplotZoneReader, num_vars: int) -> dict[str, Any]:
     elif isinstance(zone, (TecplotFEZoneReader, TecplotPolyZoneReader)):
         d["num_nodes"] = int(zone.num_nodes)
         d["num_elements"] = int(zone.num_elements)
+    elif isinstance(zone, TecplotMixedZoneReader):
+        d["num_nodes"] = int(zone.num_nodes)
+        d["num_elements"] = int(zone.num_elements)
+        d["num_sections"] = np.int32(zone.num_sections)
+        # An object array of strings becomes a MATLAB cell array.
+        d["section_shapes"] = np.array(
+            [shape.name for shape in zone.section_shapes], dtype=object
+        )
+        d["section_num_elements"] = np.asarray(
+            zone.section_num_elements, dtype=np.int64
+        )
 
     # Empty placeholder for passive/shared variables -> MATLAB [].
     empty = np.array([])
@@ -427,6 +439,14 @@ def _zone_to_dict(zone: TecplotZoneReader, num_vars: int) -> dict[str, Any]:
     # zone_<src>.node_map themselves.
     if isinstance(zone, TecplotPolyZoneReader):
         _add_poly_face_map(d, zone)
+    elif isinstance(zone, TecplotMixedZoneReader):
+        # One node map per section, ``node_map_1``, ``node_map_2``, ..., 1-based.
+        con_src = zone.shared_connectivity
+        if con_src is not None:
+            d["node_map_shared_from"] = np.int32(con_src + 1)
+        else:
+            for k, node_map in enumerate(zone.node_maps, start=1):
+                d[f"node_map_{k}"] = node_map + 1
     elif isinstance(zone, TecplotFEZoneReader):
         con_src = zone.shared_connectivity
         if con_src is not None:

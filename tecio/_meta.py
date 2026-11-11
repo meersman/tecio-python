@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ._constants import (
         DataType,
         FaceNeighborMode,
+        FeCellShape,
         FileType,
         ValueLocation,
         ZoneType,
@@ -75,6 +76,10 @@ class ZoneMeta:
         num_boundary_faces:       Boundary face count for poly zones, else ``None``.
         num_boundary_connections: Total boundary connections for poly zones, else
                                   ``None``.
+        section_shapes:           Cell shape of each section for FEMIXED zones, else
+                                  ``None``.
+        section_num_elements:     Cell count of each section for FEMIXED zones, else
+                                  ``None``.
         value_locations:          Per-variable value location, full dataset length.
         passive_vars:             Per-variable passive flags, full dataset length.
         shared_vars:              Per-variable share-from zone index, or ``None`` for
@@ -99,6 +104,9 @@ class ZoneMeta:
     total_face_nodes: int | None = None
     num_boundary_faces: int | None = None
     num_boundary_connections: int | None = None
+    # Mixed zones (FEMIXED) record their per-section layout.
+    section_shapes: tuple[FeCellShape, ...] | None = None
+    section_num_elements: tuple[int, ...] | None = None
     # Per-variable descriptors (length == dataset variable count).
     value_locations: tuple[ValueLocation, ...] = ()
     passive_vars: tuple[bool, ...] = ()

@@ -135,6 +135,7 @@ import numpy as np
 
 from .. import (
     TecplotFEZoneReader,
+    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotSzlWriter,
@@ -536,7 +537,9 @@ def _zone_sources(zone: TecplotZoneReader) -> dict[int, set[str]]:
         if sv is not None:
             sources.setdefault(sv, set()).add(var.name)
     if (
-        isinstance(zone, (TecplotFEZoneReader, TecplotPolyZoneReader))
+        isinstance(
+            zone, (TecplotFEZoneReader, TecplotMixedZoneReader, TecplotPolyZoneReader)
+        )
         and zone.shared_connectivity is not None
     ):
         sources.setdefault(zone.shared_connectivity, set())
@@ -692,9 +695,18 @@ def _write_zone_verbatim(
             con_sharing=zone_map[con_sharing] if con_sharing is not None else None,
             **fe_kw,
         )
+    elif isinstance(zone, TecplotMixedZoneReader):
+        con_sharing = zone.shared_connectivity
+        writer.write_mixed_zone(
+            data=data,
+            cell_shapes=None if con_sharing is not None else zone.section_shapes,
+            node_maps=None if con_sharing is not None else zone.node_maps,
+            con_sharing=zone_map[con_sharing] if con_sharing is not None else None,
+            **kw,
+        )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered, classic FE nor poly "
+            f"Zone '{zone.title}' is neither an ordered, classic FE, mixed nor poly "
             "zone; writing is not supported for it."
         )
 
@@ -781,9 +793,18 @@ def _write_zone_protected(
             con_sharing=con_sharing,
             **fe_kw,
         )
+    elif isinstance(zone, TecplotMixedZoneReader):
+        con_sharing = zone.shared_connectivity
+        writer.write_mixed_zone(
+            data=writer_data,
+            cell_shapes=None if con_sharing is not None else zone.section_shapes,
+            node_maps=None if con_sharing is not None else zone.node_maps,
+            con_sharing=con_sharing,
+            **kw,
+        )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered, classic FE nor poly "
+            f"Zone '{zone.title}' is neither an ordered, classic FE, mixed nor poly "
             "zone; writing is not supported for it."
         )
 

@@ -3,7 +3,8 @@
 Every format's writer (SZL, PLT, DAT) exposes the same lifecycle: construct with a path
 and optional variable list (eager or lazy open), buffer auxiliary data with
 :meth:`~TecplotWriter.add_auxdataset_dict`/ :meth:`~TecplotWriter.add_auxvar_dict`,
-write zones with ``write_ordered_zone``/ ``write_fe_zone``/ ``write_poly_zone``, and
+write zones with ``write_ordered_zone``/ ``write_fe_zone``/ ``write_mixed_zone``/
+``write_poly_zone``, and
 close (directly or via context manager). This module defines the parts of that
 lifecycle that are identical across formats once, so the three writers can no longer
 drift apart the way the readers had.
@@ -43,10 +44,12 @@ from ._constants import (
     DataPacking,
     DataType,
     FaceNeighborMode,
+    FeCellShape,
     FileType,
     ValueLocation,
     ZoneType,
 )
+from ._elements import CELL_SHAPE_DIMENSION, CELL_SHAPE_NUM_NODES
 from ._meta import WriterMeta
 from ._utils import public_dir
 
@@ -1037,6 +1040,212 @@ def prepare_fe_zone(
 
 
 @dataclass
+class PreparedMixedZone:
+    """Validated, normalized inputs for writing one mixed (FEMIXED) zone.
+
+    Everything a writer needs to proceed straight to its zone-creation call, already
+    validated and shape-consistent.
+    """
+
+    value_locations: list[ValueLocation]
+    passive_vars: list[bool]
+    var_sharing: list[int | None]
+    con_sharing: int | None
+    active_var_idx: list[int]  # 0-based dataset indices being written now
+    num_nodes: int
+    num_cells: int
+    section_shapes: tuple[FeCellShape, ...]
+    section_num_elements: tuple[int, ...]
+    section_node_maps: list[npt.NDArray]  # empty when connectivity is shared
+    value_locations_global: list[ValueLocation]
+    variable_types_global: list[DataType]
+
+
+def _as_cell_shape(shape: FeCellShape | int | str) -> FeCellShape:
+    """Return *shape* as a :class:`FeCellShape`, from a member, value or name.
+
+    Raises:
+        ValueError: If *shape* is not a member, value or name of :class:`FeCellShape`.
+    """
+    if isinstance(shape, FeCellShape):
+        return shape
+    if isinstance(shape, str):
+        try:
+            return FeCellShape[shape.upper()]
+        except KeyError:
+            raise ValueError(f"Unknown cell shape name {shape!r}.") from None
+    return FeCellShape(shape)
+
+
+def _check_section_node_map(
+    node_map: npt.ArrayLike, shape: FeCellShape, section: int
+) -> npt.NDArray:
+    """Return one section's node map as a validated ``(cells, nodes)`` array.
+
+    Raises:
+        ValueError: If the array is not integer, does not hold whole cells of *shape*
+            or holds a negative node index.
+    """
+    nodes_per_cell = CELL_SHAPE_NUM_NODES[shape]
+    arr = np.asarray(node_map)
+    if arr.dtype.kind not in "iu":
+        raise ValueError(
+            f"Section {section} node map must hold integers, got dtype {arr.dtype}."
+        )
+    if arr.ndim == 1 and arr.size % nodes_per_cell == 0:
+        arr = arr.reshape(-1, nodes_per_cell)
+    if arr.ndim != 2 or arr.shape[1] != nodes_per_cell:
+        raise ValueError(
+            f"Section {section} ({shape.name}) node map must have shape "
+            f"(num_cells, {nodes_per_cell}), got {arr.shape}."
+        )
+    if arr.size and int(arr.min()) < 0:
+        raise ValueError(f"Section {section} node map has a negative node index.")
+    return arr
+
+
+def prepare_mixed_zone(
+    arrays: Sequence[npt.NDArray],
+    variable_types: Sequence[DataType],
+    *,
+    cell_shapes: Sequence[FeCellShape | int | str] | None,
+    node_maps: Sequence[npt.ArrayLike] | None,
+    value_locations: Sequence[ValueLocation] | None,
+    passive_vars: PassiveVarsSpec | None,
+    var_sharing: VarSharingSpec | None,
+    con_sharing: int | None,
+    dataset_variables: Sequence[str],
+    meta: WriterMeta,
+) -> PreparedMixedZone | None:
+    """Validate and normalize inputs for writing a mixed (FEMIXED) zone.
+
+    Shared across formats. Derives the section layout and node/cell counts from
+    *cell_shapes* and *node_maps* (or the *con_sharing* source zone), then resolves and
+    validates the variable arguments exactly as :func:`prepare_fe_zone` does, counting
+    cells over all sections.
+
+    Args:
+        arrays: NumPy arrays already converted from the caller's raw data, one per
+            active (non-passive, non-shared) variable.
+        variable_types: Per-active-variable data type, one per array in *arrays*.
+        cell_shapes: Cell shape of each section (1 to 16), as :class:`FeCellShape`
+            members, values or names. None if *con_sharing* is set.
+        node_maps: One 0-based ``(num_cells, nodes_per_cell)`` integer array per section
+            (a flat array is reshaped). None if *con_sharing* is set.
+        value_locations: Per-active-variable value location, or None for all-NODAL.
+        passive_vars: Variables to mark passive, see :func:`prepare_fe_zone`.
+        var_sharing: Variables to share from another zone, see :func:`prepare_fe_zone`.
+        con_sharing: Source zone index to share connectivity from, or None.
+        dataset_variables: The full dataset variable name list.
+        meta: The writer's own zone metadata, for resolving shared source zones.
+
+    Returns:
+        A :class:`PreparedMixedZone`, or ``None`` after an :class:`EmptyZoneWarning`
+        when every dataset variable is passive or shared.
+
+    Raises:
+        TypeError: *passive_vars*/*var_sharing* isn't a list/tuple/set/mapping as
+            appropriate, or mixes variable names and indices.
+        ValueError: On any inconsistency: a section count outside 1 to 16, mismatched
+            or malformed section arrays, sections of different spatial dimension, fewer
+            dataset variables than the cell dimension (the library needs one coordinate
+            variable per dimension and crashes without them), a zone with no cells,
+            con_sharing referencing a zone that is not a written mixed zone, or any
+            variable validation failure.
+        KeyError: A *passive_vars*/*var_sharing* name doesn't match any dataset
+            variable.
+        IndexError: A *passive_vars*/*var_sharing* index is out of range.
+    """
+    section_maps: list[npt.NDArray] = []
+    if con_sharing is not None:
+        if cell_shapes is not None or node_maps is not None:
+            raise ValueError(
+                "cell_shapes and node_maps must be omitted when connectivity is shared "
+                "from another zone via con_sharing."
+            )
+        src_zone = meta.zone(con_sharing)
+        if (
+            src_zone is None
+            or src_zone.section_shapes is None
+            or src_zone.section_num_elements is None
+            or src_zone.num_nodes is None
+        ):
+            raise ValueError(
+                f"con_sharing={con_sharing} references a zone that has not been "
+                "written yet, or is not a mixed finite-element zone."
+            )
+        shapes = src_zone.section_shapes
+        counts = src_zone.section_num_elements
+        num_nodes = src_zone.num_nodes
+    else:
+        if cell_shapes is None or node_maps is None:
+            raise ValueError(
+                "cell_shapes and node_maps must be provided unless connectivity is "
+                "shared from another zone via con_sharing."
+            )
+        if len(cell_shapes) != len(node_maps):
+            raise ValueError(
+                f"cell_shapes has {len(cell_shapes)} sections but node_maps has "
+                f"{len(node_maps)}."
+            )
+        shapes = tuple(_as_cell_shape(shape) for shape in cell_shapes)
+        if not 1 <= len(shapes) <= 16:
+            raise ValueError(f"A mixed zone needs 1 to 16 sections, got {len(shapes)}.")
+        section_maps = [
+            _check_section_node_map(nm, shape, i)
+            for i, (nm, shape) in enumerate(zip(node_maps, shapes, strict=True))
+        ]
+        counts = tuple(int(nm.shape[0]) for nm in section_maps)
+        if sum(counts) == 0:
+            raise ValueError("A mixed zone needs at least one cell.")
+        num_nodes = max(int(nm.max()) for nm in section_maps if nm.size) + 1
+
+    dimensions = {CELL_SHAPE_DIMENSION[shape] for shape in shapes}
+    if len(dimensions) > 1:
+        raise ValueError(
+            "All sections of a mixed zone must have the same spatial dimension, got "
+            + ", ".join(shape.name for shape in shapes)
+            + "."
+        )
+    dimension = dimensions.pop()
+    if len(dataset_variables) < dimension:
+        raise ValueError(
+            f"{dimension}-dimensional cells need at least {dimension} (coordinate) "
+            f"variables, the dataset has {len(dataset_variables)}."
+        )
+
+    num_cells = sum(counts)
+    zone_vars = _prepare_zone_variables(
+        arrays,
+        variable_types,
+        value_locations=value_locations,
+        passive_vars=passive_vars,
+        var_sharing=var_sharing,
+        dataset_variables=dataset_variables,
+        num_nodes=num_nodes,
+        num_cells=num_cells,
+        meta=meta,
+        stacklevel=4,
+    )
+    if zone_vars is None:
+        return None
+    return PreparedMixedZone(
+        value_locations=list(zone_vars.value_locations),
+        passive_vars=zone_vars.passive_flags,
+        var_sharing=list(zone_vars.share_idx),
+        con_sharing=con_sharing,
+        active_var_idx=zone_vars.active_var_idx,
+        num_nodes=num_nodes,
+        num_cells=num_cells,
+        section_shapes=shapes,
+        section_num_elements=counts,
+        section_node_maps=section_maps,
+        value_locations_global=zone_vars.value_locations_global,
+        variable_types_global=zone_vars.variable_types_global,
+    )
+
+
+@dataclass
 class _PolyConnectivity:
     """Validated face map of a poly zone plus the counts derived from it."""
 
@@ -1801,6 +2010,26 @@ class TecplotWriter(ABC):
         aux: dict[str, Any] | None = None,
     ) -> None:
         """Write a complete finite-element zone."""
+
+    @abstractmethod
+    def write_mixed_zone(
+        self,
+        data: Sequence[npt.ArrayLike],
+        cell_shapes: Sequence[FeCellShape | int | str] | None = None,
+        node_maps: Sequence[npt.ArrayLike] | None = None,
+        *,
+        title: str | None = None,
+        variables: list[str] | None = None,
+        value_locations: Sequence[ValueLocation] | None = None,
+        passive_vars: PassiveVarsSpec | None = None,
+        var_sharing: VarSharingSpec | None = None,
+        con_sharing: int | None = None,
+        solution_time: float = 0.0,
+        strand_id: int = 0,
+        aux: dict[str, Any] | None = None,
+        datapacking: DataPacking | str = DataPacking.BLOCK,
+    ) -> None:
+        """Write a complete FEMIXED zone, see the concrete subclass for details."""
 
     @abstractmethod
     def write_poly_zone(

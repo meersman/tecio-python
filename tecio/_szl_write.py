@@ -18,6 +18,7 @@ from ._constants import (
     DataPacking,
     DataType,
     FaceNeighborMode,
+    FeCellShape,
     FileType,
     ValueLocation,
     ZoneType,
@@ -26,11 +27,13 @@ from ._meta import ZoneMeta
 from ._writer import (
     PassiveVarsSpec,
     PreparedFEZone,
+    PreparedMixedZone,
     PreparedOrderedZone,
     TecplotWriter,
     VarSharingSpec,
     normalize_precision,
     prepare_fe_zone,
+    prepare_mixed_zone,
     prepare_ordered_zone,
     var_sharing_for_libtecio,
     zone_for_libtecio,
@@ -234,6 +237,38 @@ def _write_connectivity(
             libtecio.tec_zone_face_nbr_write_connections32(
                 handle, zone_num, face_nbr_flat
             )
+
+
+def _write_mixed_connectivity(
+    handle: ctypes.c_void_p,
+    zone_num: int,
+    node_maps: Sequence[npt.NDArray],
+    num_nodes: int,
+) -> None:
+    """Write the section node maps of a mixed zone, in section order.
+
+    All sections of a zone share one integer width, 64 bit only when *num_nodes* does
+    not fit 32 bits. Each section is converted to 1-based indices of that width in a
+    single pass, so at most one section is copied at a time.
+
+    Args:
+        handle (ctypes.c_void_p): C library file handle.
+        zone_num (int): 1-based zone index.
+        node_maps (Sequence[npt.NDArray]): 0-based ``(num_cells, nodes_per_cell)`` array
+            of each section.
+        num_nodes (int): Zone node count.
+    """
+    wide = num_nodes > np.iinfo(np.int32).max
+    dtype = np.int64 if wide else np.int32
+    write = (
+        libtecio.tec_zone_node_map_write64
+        if wide
+        else libtecio.tec_zone_node_map_write32
+    )
+    for node_map in node_maps:
+        if node_map.size:
+            one_based = np.add(node_map, 1, dtype=dtype, casting="unsafe")
+            write(handle, zone_num, one_based.ravel(order="C"))
 
 
 def _write_zone_aux_data(
@@ -972,6 +1007,232 @@ class TecplotSzlWriter(TecplotWriter):
                     face_neighbor_mode if face_neighbors_arr is not None else None
                 ),
                 num_face_connections=num_face_cons or None,
+            )
+        )
+
+    # -- Mixed unstructured zone writer ------------------------------------------------
+
+    def write_mixed_zone(
+        self,
+        data: Sequence[npt.ArrayLike],
+        cell_shapes: Sequence[FeCellShape | int | str] | None = None,
+        node_maps: Sequence[npt.ArrayLike] | None = None,
+        *,
+        title: str | None = None,
+        variables: list[str] | None = None,
+        value_locations: Sequence[ValueLocation] | None = None,
+        passive_vars: PassiveVarsSpec | None = None,
+        var_sharing: VarSharingSpec | None = None,
+        con_sharing: int | None = None,
+        solution_time: float = 0.0,
+        strand_id: int = 0,
+        aux: dict[str, Any] | None = None,
+        datapacking: DataPacking | str = DataPacking.BLOCK,
+        flush: bool = False,
+    ) -> None:
+        """Write a complete mixed finite-element (FEMIXED) zone.
+
+        A mixed zone holds 1 to 16 sections, each with one cell shape. A typical use is
+        a CFD volume mesh of tetrahedra, pyramids, prisms and hexahedra in one zone
+        rather than every cell padded to a brick. All sections must have the same
+        spatial dimension (all line, all surface or all volume cells). Cells are
+        numbered through the sections in order, so a CELL_CENTERED array lists the cells
+        of the first section first. Only linear (grid order 1) cells are supported.
+
+        Node and cell counts are inferred from *node_maps*, or from the zone referenced
+        by *con_sharing*. The 32- or 64-bit write path is chosen from the node count.
+        This writer does not write face-neighbor connections.
+
+        Args:
+            data (Sequence[npt.ArrayLike]):
+                Sequence of 1-D arrays, one per active (non-passive, non-shared) dataset
+                variable, in dataset order. NODAL arrays must have length ``num_nodes``,
+                CELL_CENTERED arrays the total cell count over all sections.
+            cell_shapes (Sequence[FeCellShape]):
+                Cell shape of each section. A shape name or value is also accepted.
+                Required unless ``con_sharing`` is set, in which case it must be omitted.
+            node_maps (Sequence[npt.ArrayLike]):
+                One integer array per section, of shape ``(num_cells, nodes_per_cell)``
+                with 0-based node indices. A flat array is reshaped. A section may have
+                no cells. Required unless ``con_sharing`` is set, in which case it must
+                be omitted.
+            title (str):
+                Zone title string. Defaults to ``"Mixed_Zone_{index}"``, this zone's
+                0-based index.
+            variables (list[str]):
+                Variable name list. Required only when the file has not been opened yet
+                (lazy-open path). Defaults to ``[V1, V2, V3, ...]``.
+            value_locations (Sequence[ValueLocation]):
+                Per-active-variable :class:`~tecio.ValueLocation`. Defaults to all
+                ``NODAL``.
+            passive_vars (list | tuple | set | None):
+                Variables to mark passive: a list, tuple, or set of variable names, or
+                of 0-based indices. Defaults to all active.
+            var_sharing (Mapping[int | str, int]):
+                Variables to share from another zone: a ``{variable: source zone}``
+                mapping, name or 0-based index to 0-based zone index.
+            con_sharing (int):
+                Optional index of a mixed zone to share the connectivity of. The first
+                zone in a dataset must own its connectivity.
+            solution_time (float):
+                Solution time for transient data. Defaults to ``0.0``.
+            strand_id (int):
+                Strand ID for transient data, ``0`` for static zones.
+            aux (dict[str, str | float | int]):
+                Zone-level auxiliary data as ``{name: value}`` pairs.
+            datapacking (DataPacking | str):
+                Only :attr:`~tecio.DataPacking.BLOCK` (the default) is supported.
+            flush:
+                If ``True``, flush this zone and all previous data to a temporary
+                intermediate file after writing, releasing data from memory.
+
+        Raises:
+            NotImplementedError:
+                If *datapacking* is :attr:`~tecio.DataPacking.POINT`.
+            ValueError:
+                On a bad section layout or array shape, sections of different spatial
+                dimension, fewer dataset variables than the cell dimension, a variable
+                count or array length mismatch, or a bad ``con_sharing`` or
+                ``var_sharing`` source zone. See
+                :func:`~tecio._writer.prepare_mixed_zone`.
+            TypeError:
+                If *passive_vars*/*var_sharing* isn't a list/tuple/set/mapping as
+                appropriate, or mixes variable names and indices.
+            KeyError:
+                A *passive_vars*/*var_sharing* name doesn't match any dataset variable.
+            IndexError:
+                A *passive_vars*/*var_sharing* index is out of range.
+            RuntimeError:
+                If the writer has been closed.
+
+        Note:
+            SZPLT reorders cells and nodes internally for storage, so the arrays read
+            back may be a permutation of the arrays written, consistently across all
+            variables and the node maps.
+        """
+        # Validate input
+        if isinstance(datapacking, str):
+            try:
+                datapacking = DataPacking[datapacking.upper()]
+            except KeyError:
+                raise ValueError(
+                    f"datapacking={datapacking!r} is not a recognised value; "
+                    "use DataPacking.BLOCK or the string 'BLOCK'."
+                ) from None
+        if datapacking != DataPacking.BLOCK:
+            raise NotImplementedError(
+                "DATAPACKING=POINT is an ASCII-only layout and is not supported "
+                "by the SZL binary format. Use DataPacking.BLOCK (the default) "
+                "or write to a .dat file instead."
+            )
+
+        arrays: list[npt.NDArray] = [np.asarray(arr) for arr in data]
+        if title is None:
+            title = f"Mixed_Zone_{self.current_zone + 1}"
+        if variables is None:
+            variables = [f"V{i}" for i in range(1, len(data) + 1)]
+
+        # Open the file if lazily loaded and flush buffered aux data
+        if self.handle is None:
+            self._open(variables)
+        if self.current_zone == -1:
+            self.flush_aux()
+
+        variable_types = [
+            _resolve_written_type(_infer_data_type(arr.dtype), self.precision)
+            for arr in arrays
+        ]
+        prepared: PreparedMixedZone | None = prepare_mixed_zone(
+            arrays,
+            variable_types,
+            cell_shapes=cell_shapes,
+            node_maps=node_maps,
+            value_locations=value_locations,
+            passive_vars=passive_vars,
+            var_sharing=var_sharing,
+            con_sharing=con_sharing,
+            dataset_variables=self._check_variables(),
+            meta=self._meta,
+        )
+        if prepared is None:
+            return
+        share_idx = prepared.var_sharing
+
+        # Write zone header. The C library assigns and returns a 1-based zone
+        # number; converted to 0-based for the public current_zone attribute.
+        self.current_zone = (
+            libtecio.tec_zone_create_fe_mixed(
+                self._check_handle(),
+                title,
+                prepared.num_nodes,
+                prepared.section_shapes,
+                prepared.section_num_elements,
+                var_types=prepared.variable_types_global,
+                var_sharing=var_sharing_for_libtecio(share_idx),
+                value_locations=prepared.value_locations_global,
+                pas_vars=prepared.passive_vars,
+                con_sharing=zone_for_libtecio(prepared.con_sharing),
+            )
+            - 1
+        )
+        zone_num = self.current_zone + 1
+
+        # Unsteady options
+        if strand_id != 0 or solution_time != 0.0:
+            libtecio.tec_zone_set_unsteady_options(
+                handle=self._check_handle(),
+                zone=zone_num,
+                strand=strand_id,
+                solution_time=solution_time,
+            )
+
+        # Write zone-level aux data
+        if aux is not None:
+            _write_zone_aux_data(self._check_handle(), {zone_num: aux})
+
+        # Write active data only
+        for var_idx, arr, dtype in zip(
+            prepared.active_var_idx, arrays, variable_types, strict=True
+        ):
+            self.current_var = var_idx
+            _write_data(
+                self._check_handle(),
+                zone_num=zone_num,
+                var_num=var_idx + 1,
+                data=arr,
+                dt=dtype,
+            )
+
+        # Write connectivity (if not shared)
+        if prepared.con_sharing is None:
+            _write_mixed_connectivity(
+                self._check_handle(),
+                zone_num,
+                prepared.section_node_maps,
+                prepared.num_nodes,
+            )
+
+        # Flush zone data, releasing memory
+        if flush:
+            libtecio.tec_file_writer_flush(self._check_handle())
+
+        # Finally set zone metadata after successfully completing TecIO calls
+        self._meta.record_zone(
+            ZoneMeta(
+                index=self.current_zone,
+                title=title,
+                zone_type=ZoneType.FEMIXED,
+                solution_time=solution_time,
+                strand_id=strand_id,
+                num_aux_items=len(aux) if aux else 0,
+                num_nodes=prepared.num_nodes,
+                num_elements=prepared.num_cells,
+                section_shapes=prepared.section_shapes,
+                section_num_elements=prepared.section_num_elements,
+                value_locations=tuple(prepared.value_locations_global),
+                passive_vars=tuple(bool(p) for p in prepared.passive_vars),
+                shared_vars=tuple(share_idx),
+                data_types=tuple(prepared.variable_types_global),
             )
         )
 

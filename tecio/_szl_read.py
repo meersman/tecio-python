@@ -3,7 +3,8 @@
 Small scalar zone metadata (title, type, dimensions or node/element counts, solution
 time, strand ID, shared connectivity) is queried once, at zone construction, and frozen
 by :class:`~tecio._reader.TecplotOrderedZoneReader` /
-:class:`~tecio._reader.TecplotFEZoneReader`. Variable metadata is queried live, on each
+:class:`~tecio._reader.TecplotFEZoneReader` /
+:class:`~tecio._reader.TecplotMixedZoneReader`. Variable metadata is queried live, on each
 access, it's a single cheap C call either way. Variable data arrays and node maps are
 read lazily, on first access, straight from the C library.
 """
@@ -22,14 +23,17 @@ from ._constants import (
     DataPacking,
     DataType,
     FaceNeighborMode,
+    FeCellShape,
     FileType,
     ValueLocation,
     ZoneType,
 )
 from ._containers import ZoneList
+from ._elements import CELL_SHAPE_NUM_NODES
 from ._reader import (
     TecplotAuxDataReader,
     TecplotFEZoneReader,
+    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotReader,
     TecplotVariableReader,
@@ -458,6 +462,96 @@ class TecplotSzlFEZoneReader(TecplotFEZoneReader):
         return TecplotSzlZoneAuxDataReader(self._handle, self.zone_index + 1)
 
 
+class TecplotSzlMixedZoneReader(TecplotMixedZoneReader):
+    """Mixed finite-element (FEMIXED) zone reader for SZL files.
+
+    Scalar metadata and the section layout are queried from the C library once, at
+    construction, and frozen by the base class. The variable list, node maps, and aux
+    data stay lazily loaded on first access.
+
+    Raises:
+        NotImplementedError: If a section has a grid order above 1 (higher-order
+            elements) or a nonzero basis function.
+    """
+
+    __slots__ = ("_handle", "_num_vars")
+    _handle: ctypes.c_void_p
+    _num_vars: int
+
+    def __init__(self, handle: ctypes.c_void_p, zone_index: int, num_vars: int) -> None:
+        zone_num = zone_index + 1
+        num_nodes, _, _ = libtecio.tec_zone_get_ijk(handle, zone_num)
+        shapes: list[FeCellShape] = []
+        counts: list[int] = []
+        for section in range(
+            1, libtecio.tec_zone_get_num_sections(handle, zone_num) + 1
+        ):
+            shape, order, basis_fn, count, _ = libtecio.tec_zone_get_section_metrics(
+                handle, zone_num, section
+            )
+            if order != 1 or basis_fn != 0:
+                raise NotImplementedError(
+                    f"Zone {zone_index} section {section - 1} has grid order {order} "
+                    f"and basis function {basis_fn}; only linear sections (grid order "
+                    "1, basis function 0) are supported."
+                )
+            shapes.append(shape)
+            counts.append(count)
+        raw_shared = libtecio.tec_zone_connectivity_get_shared_zone(handle, zone_num)
+        super().__init__(
+            zone_index=zone_index,
+            title=libtecio.tec_zone_get_title(handle, zone_num),
+            solution_time=libtecio.tec_zone_get_solution_time(handle, zone_num),
+            strand_id=libtecio.tec_zone_get_strand_id(handle, zone_num),
+            datapacking=DataPacking.BLOCK,
+            num_nodes=num_nodes,
+            section_shapes=tuple(shapes),
+            section_num_elements=tuple(counts),
+            shared_connectivity=raw_shared - 1 if raw_shared is not None else None,
+        )
+        object.__setattr__(self, "_handle", handle)
+        object.__setattr__(self, "_num_vars", num_vars)
+
+    def is_enabled(self) -> bool:
+        """True if the zone is enabled (queried live).
+
+        SZL is the only format with a genuine per-zone enabled flag; PLT and DAT use the
+        base class default of always True.
+
+        Returns:
+            bool: ``True`` for an enabled zone.
+        """
+        return _szl_zone_is_enabled(self._handle, self.zone_index)
+
+    def _load_variables(self) -> list[TecplotVariableReader]:
+        return _load_szl_variables(self._handle, self.zone_index, self._num_vars)
+
+    def _load_node_maps(self) -> tuple[npt.NDArray[np.int64], ...]:
+        shared = self.shared_connectivity
+        zone_num = (shared if shared is not None else self.zone_index) + 1
+        widths = [CELL_SHAPE_NUM_NODES[shape] for shape in self.section_shapes]
+        sizes = self.section_num_elements
+        raw = libtecio.tec_zone_node_map_get_flat(
+            self._handle,
+            zone_num,
+            self.num_elements,
+            sum(w * n for w, n in zip(widths, sizes, strict=True)),
+            libtecio.is_64bit(self._handle, zone_num),
+        )
+        # Node numbers from the C library are 1-based, convert to 0-based indices.
+        flat = np.subtract(raw, 1, dtype=np.int64)
+        maps: list[npt.NDArray[np.int64]] = []
+        start = 0
+        for width, size in zip(widths, sizes, strict=True):
+            stop = start + width * size
+            maps.append(flat[start:stop].reshape(size, width))
+            start = stop
+        return tuple(maps)
+
+    def _load_auxdata(self) -> TecplotAuxDataReader:
+        return TecplotSzlZoneAuxDataReader(self._handle, self.zone_index + 1)
+
+
 def _build_szl_zone(
     handle: ctypes.c_void_p, zone_index: int, num_vars: int
 ) -> TecplotZoneReader:
@@ -482,6 +576,8 @@ def _build_szl_zone(
             f"Zone {zone_index} is {zone_type.name}; polygon and polyhedron zones "
             "are not yet supported in SZPLT files."
         )
+    if zone_type == ZoneType.FEMIXED:
+        return TecplotSzlMixedZoneReader(handle, zone_index, num_vars)
     return TecplotSzlFEZoneReader(handle, zone_index, num_vars)
 
 
