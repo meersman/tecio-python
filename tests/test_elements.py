@@ -19,7 +19,6 @@ import pytest
 import tecio
 from tecio import FaceNeighborMode, FeCellShape, ValueLocation, ZoneType
 from tecio import _elements as elements
-from tecio._hashing import lowbias32, splitmix64
 from tecio.cli.tecelretyp import main as tecelretyp
 
 BRICK = ZoneType.FEBRICK
@@ -596,8 +595,8 @@ class TestNodeHashes:
     def test_uses_the_hash_functions(self) -> None:
         wide, narrow = elements._node_hashes(1000)
         index = np.arange(1000, dtype=np.uint64)
-        assert np.array_equal(wide, splitmix64(index))
-        assert np.array_equal(narrow, lowbias32((index + 1).astype(np.uint32)))
+        assert np.array_equal(wide, elements._splitmix64(index))
+        assert np.array_equal(narrow, elements._lowbias32((index + 1).astype(np.uint32)))
 
     def test_dtypes(self) -> None:
         wide, narrow = elements._node_hashes(10)

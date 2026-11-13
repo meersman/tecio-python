@@ -43,7 +43,6 @@ import numpy as np
 import numpy.typing as npt
 
 from ._constants import FeCellShape, ZoneType
-from ._hashing import lowbias32, splitmix64
 
 __all__ = [
     "UNKNOWN_SHAPE",
@@ -181,9 +180,9 @@ class _Table(NamedTuple):
     orders: npt.NDArray[np.int8]  # node positions of the collapsed cell, -1 if unused
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Pattern tables
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 
 
 def _label_strings(n: int) -> Iterator[tuple[int, ...]]:
@@ -419,9 +418,9 @@ def _table(zone_type: ZoneType) -> _Table:
     )
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Helpers
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 
 
 def _as_node_map(
@@ -489,9 +488,9 @@ def _classify_chunk(
     return shapes, rows
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Public API
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 
 
 def classify_cells(
@@ -742,9 +741,74 @@ def expand_cells(
     return nodes[:, list(columns)]
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Face neighbors
+# ======================================================================================
+
+
 # --------------------------------------------------------------------------------------
+# Hashing functions
+# --------------------------------------------------------------------------------------
+
+
+_GAMMA = np.uint64(0x9E3779B97F4A7C15)
+_MUL64 = (np.uint64(0xBF58476D1CE4E5B9), np.uint64(0x94D049BB133111EB))
+_MUL32 = (np.uint32(0x7FEB352D), np.uint32(0x846CA68B))
+
+
+def _splitmix64(x: npt.NDArray[np.uint64]) -> npt.NDArray[np.uint64]:
+    """Return the SplitMix64 output for each generator state in *x*.
+
+    This is one step of the generator: add the golden ratio increment to the state, then
+    mix. Output ``k`` of a generator seeded with ``s`` is ``splitmix64(s + k * gamma)``
+    with ``gamma = 0x9E3779B97F4A7C15``, so ``splitmix64(0)`` is its first output for
+    seed 0. Arithmetic wraps modulo 2**64 and *x* is not modified.
+
+    Args:
+        x: Array of ``uint64`` states.
+
+    Returns:
+        New ``uint64`` array of the same shape.
+
+    References:
+        :func:`splitmix64` is the output function of the SplitMix64 generator, written
+        in 2015 by Sebastiano Vigna and dedicated to the public domain
+        (https://prng.di.unimi.it/splitmix64.c). It is a fixed increment version of the
+        SplittableRandom generator of G. L. Steele Jr., D. Lea and C. H. Flood, "Fast
+        splittable pseudorandom number generators", OOPSLA 2014,
+        https://doi.org/10.1145/2714064.2660195.
+    """
+    z = x + _GAMMA
+    z ^= z >> np.uint64(30)
+    z *= _MUL64[0]
+    z ^= z >> np.uint64(27)
+    z *= _MUL64[1]
+    z ^= z >> np.uint64(31)
+    return z
+
+
+def _lowbias32(x: npt.NDArray[np.uint32]) -> npt.NDArray[np.uint32]:
+    """Return the ``lowbias32`` hash of each value in *x*.
+
+    Zero maps to zero, so offset the input when that matters. Arithmetic wraps modulo
+    2**32 and *x* is not modified.
+
+    Args:
+        x: Array of ``uint32`` values.
+
+    Returns:
+        New ``uint32`` array of the same shape.
+
+    References:
+        Chris Wellons, "Prospecting for Hash Functions", 2018,
+        https://nullprogram.com/blog/2018/07/31/ (public domain, exact bias 0.1735).
+    """
+    z = x ^ (x >> np.uint32(16))
+    z *= _MUL32[0]
+    z ^= z >> np.uint32(15)
+    z *= _MUL32[1]
+    z ^= z >> np.uint32(16)
+    return z
 
 
 def _node_hashes(
@@ -763,7 +827,7 @@ def _node_hashes(
     index = np.arange(num_nodes, dtype=np.uint64)
     one_based = index + np.uint64(1)
     one_based ^= one_based >> np.uint64(32)
-    return splitmix64(index), lowbias32(one_based.astype(np.uint32))
+    return _splitmix64(index), _lowbias32(one_based.astype(np.uint32))
 
 
 def _hash_faces(
