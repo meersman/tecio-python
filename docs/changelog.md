@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     natural zone type (`FEBRICK` to `FETETRAHEDRON`, `FEQUADRILATERAL` to
     `FETRIANGLE`) and keep the cell handedness. `expand_cells` goes the other
     way.
+  - `split_cells_by_shape` separates padded cells in a `FEBRICK` or
+    `FEQUADRILATERAL` zone by shape for writing them as a `FEMIXED`
+    zone. Pyramids and prisms keep the handedness of the brick they came from.
   - `cell_face_neighbors` finds the cell across every face of every cell from
     the node map alone, for triangles, quadrilaterals, tetrahedra and
     bricks. It returns `-1` for boundary faces.
@@ -28,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elements.
 - `tecelretyp` console script retypes FE zones whose cells are all upcast with
   repeated nodes, which gives a more compact node map and more descriptive
-  zone metadata. It supports `--dry-run`, `--check`, `-z/--zones`,
-  `--drop-face-neighbors`, `-o` and `-f`.
+  zone metadata.
+- Mixed finite-element (`FEMIXED`) zones suppport (read and write) for SZPLT
+  files.
 
 ---
 

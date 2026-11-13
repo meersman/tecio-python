@@ -12,6 +12,7 @@ with tecio.open("out.szplt", "w", variables=["x", "y", "p"]) as w:    # 1. open
     w.add_auxdataset_dict({"Solver": "SU2"})                          # 2. stage dataset level aux data
     w.write_ordered_zone(data=[x, y, p], title="Zone 1")              # 3. write structured zones
     w.write_fe_zone(data=[...], zone_type=ZoneType.FETRIANGLE, ...)   # 4. write unstructured zones
+    w.write_mixed_zone(data=[...], cell_shapes=[...], node_maps=[...])  # SZL only
     w.write_poly_zone(data=[...], zone_type=ZoneType.FEPOLYGON, ...)  # PLT and DAT only
     # 5. close happens automatically on context-manager exit
 ```
@@ -123,6 +124,50 @@ convention here instead, same as everywhere else in the Python API.
 accepted without error but currently do nothing, the ASCII face-neighbor
 representation isn't implemented yet. Passing them silently produces a file
 with no face-neighbor data, planned work, not yet scheduled.
+
+## `write_mixed_zone`
+
+Writes one complete FEMIXED zone (SZPLT only). A mixed zone holds multiple
+"sections" sections, where each section contains homogeneous element shape and
+grid order. `write_mixed_zone` is not currently suported for PLT and DAT file
+formats (Tecplot contstraint) and will raise a `NotImplementedError` Variable,
+sharing, time, strand ID and aux parameters of `write_fe_zone` also apply to
+`write_mixed_zoine`, plus new keyword arguments:
+
+| Parameter | Type | Default | SZL | PLT | DAT |
+|---|---|---|---|---|---|
+| `cell_shapes` | `Sequence[FeCellShape]` | `None` | ✓ | ✗ | ✗ |
+| `node_maps` | `Sequence[ArrayLike]` | `None` | ✓ | ✗ | ✗ |
+| `con_sharing` | `int \| None` | `None` | ✓ | ✗ | ✗ |
+| `flush` | `bool` | `False` | ✓ | — | — |
+
+`cell_shapes` and `node_maps` have one entry per section. Each node map is a
+`(num_cells, nodes_per_cell)` integer array of 0-based node indices, a section
+may hold no cells, and all sections must have the same spatial dimension (all
+line, all surface or all volume cells). Node and cell counts are inferred from
+the node maps, or from the mixed zone referenced by `con_sharing`, in which
+case both arguments should be omitted. A cell-centered array lists the cells
+of the first section first. While higher order elements are supported by
+Tecplot for FEMIXED, only linear cells are implemented in this library. Face
+neighbors are not written.
+
+:::{note}
+* SZPLT may store cells and nodes in a different order than the order supplied
+  to TecIO. When read back every variable and node map will be reordered
+  consistently.
+* Face neighbors for FEMIXED is broadly disabled for SZPLT due to a bug in the
+  version of TecIO released with the Tecplot360 2025R2.
+:::
+
+```python
+with tecio.open("mesh.szplt", "w") as w:
+    w.write_mixed_zone(
+        data=[x, y, z, p],
+        cell_shapes=[FeCellShape.TETRAHEDRON, FeCellShape.HEXAHEDRON],
+        node_maps=[tets, hexes],  # (n_tets, 4) and (n_hexes, 8)
+        variables=["x", "y", "z", "p"],
+    )
+```
 
 ## `write_poly_zone`
 

@@ -21,6 +21,7 @@
    is_64bit
    tec_zone_node_map_get_64
    tec_zone_node_map_get
+   tec_zone_node_map_get_flat
    tec_var_get_name
    tec_var_is_enabled
    tec_zone_var_get_type
@@ -51,6 +52,7 @@
 .. autofunction:: tecio.libtecio.is_64bit
 .. autofunction:: tecio.libtecio.tec_zone_node_map_get_64
 .. autofunction:: tecio.libtecio.tec_zone_node_map_get
+.. autofunction:: tecio.libtecio.tec_zone_node_map_get_flat
 .. autofunction:: tecio.libtecio.tec_var_get_name
 .. autofunction:: tecio.libtecio.tec_var_is_enabled
 .. autofunction:: tecio.libtecio.tec_zone_var_get_type

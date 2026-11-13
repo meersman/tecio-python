@@ -11,6 +11,7 @@
    :toctree: cli
 
    tecdump
+   tecelretyp
    tecextract
    tecfix
    tecmerge

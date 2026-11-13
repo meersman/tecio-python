@@ -77,6 +77,7 @@ See {doc}`libtecio_szl_read` for full documentation.
    is_64bit
    tec_zone_node_map_get_64
    tec_zone_node_map_get
+   tec_zone_node_map_get_flat
    tec_var_get_name
    tec_var_is_enabled
    tec_zone_var_get_type

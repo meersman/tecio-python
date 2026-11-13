@@ -144,7 +144,7 @@ from .. import (
     split_cells_by_shape,
 )
 from .. import open as tecio_open
-from .._constants import CELL_SHAPE_DIMENSION, CELL_SHAPE_NUM_NODES
+from .._elements import CELL_SHAPE_DIMENSION, CELL_SHAPE_NUM_NODES
 from .._writer import poly_face_kwargs
 from .tecextract import _parse_index_list
 

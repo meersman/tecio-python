@@ -56,13 +56,14 @@ pip install -e ".[dev]"
 - **NumPy** — installed automatically by `pip`
 - **Tecplot 360 EX** (2024 R1 or newer) — provides the TecIO shared library
   (`libtecio.so` on Linux, `libtecio.dylib` on macOS, `tecio.dll` on
-  Windows).  An active Tecplot *license* is **not** required at runtime;
+  Windows). An active Tecplot *license* is **not** required at runtime;
   only the installed software distribution is needed.
 
 :::{note}
-The `FEMIXED` zone type was added to TecIO released with Tecplot 360 EX 2024 R1.
-{mod}`tecio` is compatible with older versions of TecIO, but `FEMIXED` zones cannot
-be created.
+The `FEMIXED` zone type was added to TecIO released with Tecplot 360 EX 2024
+R1. {mod}`tecio` is compatible with older versions of TecIO, but `FEMIXED`
+zones are not supported if an older version of the TecIO shared object binary
+is used.
 :::
 
 ### Optional
