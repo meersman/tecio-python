@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `cell_face_neighbors` finds the cell across every face of every cell from
     the node map alone, for triangles, quadrilaterals, tetrahedra and
     bricks. It returns `-1` for boundary faces.
+  - `match_nodes` and `match_cells` find how the nodes and cells of a zone are
+    ordered relative to a reference zone with the same grid since multiple
+    cell orderings could be used for identical unstructured meshes. They
+    return the orders that put nodal and cell-centered variables in the
+    reference order, or `None` if the zones do not match.
 - `TecplotPolyZoneReader.element_faces()` and `element_nodes()` return the
   faces and the distinct nodes of every element of a polygon or polyhedron
   zone as `(offsets, flat_array)`, built from the face left and right
@@ -32,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tecelretyp` console script retypes FE zones whose cells are all upcast with
   repeated nodes, which gives a more compact node map and more descriptive
   zone metadata.
-- Mixed finite-element (`FEMIXED`) zones suppport (read and write) for SZPLT
+- FEMIXED (mixed finite-element) zones suppport (read and write) for SZPLT
   files.
 
 ---

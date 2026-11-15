@@ -26,14 +26,14 @@ from ._constants import (
 from ._meta import ZoneMeta
 from ._writer import (
     PassiveVarsSpec,
+    PreparedFEMixedZone,
     PreparedFEZone,
-    PreparedMixedZone,
     PreparedOrderedZone,
     TecplotWriter,
     VarSharingSpec,
     normalize_precision,
     prepare_fe_zone,
-    prepare_mixed_zone,
+    prepare_femixed_zone,
     prepare_ordered_zone,
     var_sharing_for_libtecio,
     zone_for_libtecio,
@@ -239,13 +239,13 @@ def _write_connectivity(
             )
 
 
-def _write_mixed_connectivity(
+def _write_femixed_connectivity(
     handle: ctypes.c_void_p,
     zone_num: int,
     node_maps: Sequence[npt.NDArray],
     num_nodes: int,
 ) -> None:
-    """Write the section node maps of a mixed zone, in section order.
+    """Write the section node maps of a FEMIXED zone, in section order.
 
     All sections of a zone share one integer width, 64 bit only when *num_nodes* does
     not fit 32 bits. Each section is converted to 1-based indices of that width in a
@@ -1010,9 +1010,9 @@ class TecplotSzlWriter(TecplotWriter):
             )
         )
 
-    # -- Mixed unstructured zone writer ------------------------------------------------
+    # -- FEMIXED zone writer -----------------------------------------------------------
 
-    def write_mixed_zone(
+    def write_femixed_zone(
         self,
         data: Sequence[npt.ArrayLike],
         cell_shapes: Sequence[FeCellShape | int | str] | None = None,
@@ -1030,10 +1030,10 @@ class TecplotSzlWriter(TecplotWriter):
         datapacking: DataPacking | str = DataPacking.BLOCK,
         flush: bool = False,
     ) -> None:
-        """Write a complete mixed finite-element (FEMIXED) zone.
+        """Write a complete FEMIXED (mixed finite-element) zone.
 
-        A mixed zone holds 1 to 16 sections, each with one cell shape. A typical use is
-        a CFD volume mesh of tetrahedra, pyramids, prisms and hexahedra in one zone
+        A FEMIXED zone holds 1 to 16 sections, each with one cell shape. A typical use
+        is a CFD volume mesh of tetrahedra, pyramids, prisms and hexahedra in one zone
         rather than every cell padded to a brick. All sections must have the same
         spatial dimension (all line, all surface or all volume cells). Cells are
         numbered through the sections in order, so a CELL_CENTERED array lists the cells
@@ -1057,7 +1057,7 @@ class TecplotSzlWriter(TecplotWriter):
                 no cells. Required unless ``con_sharing`` is set, in which case it must
                 be omitted.
             title (str):
-                Zone title string. Defaults to ``"Mixed_Zone_{index}"``, this zone's
+                Zone title string. Defaults to ``"FEMixed_Zone_{index}"``, this zone's
                 0-based index.
             variables (list[str]):
                 Variable name list. Required only when the file has not been opened yet
@@ -1072,7 +1072,7 @@ class TecplotSzlWriter(TecplotWriter):
                 Variables to share from another zone: a ``{variable: source zone}``
                 mapping, name or 0-based index to 0-based zone index.
             con_sharing (int):
-                Optional index of a mixed zone to share the connectivity of. The first
+                Optional index of a FEMIXED zone to share the connectivity of. The first
                 zone in a dataset must own its connectivity.
             solution_time (float):
                 Solution time for transient data. Defaults to ``0.0``.
@@ -1094,7 +1094,7 @@ class TecplotSzlWriter(TecplotWriter):
                 dimension, fewer dataset variables than the cell dimension, a variable
                 count or array length mismatch, or a bad ``con_sharing`` or
                 ``var_sharing`` source zone. See
-                :func:`~tecio._writer.prepare_mixed_zone`.
+                :func:`~tecio._writer.prepare_femixed_zone`.
             TypeError:
                 If *passive_vars*/*var_sharing* isn't a list/tuple/set/mapping as
                 appropriate, or mixes variable names and indices.
@@ -1128,7 +1128,7 @@ class TecplotSzlWriter(TecplotWriter):
 
         arrays: list[npt.NDArray] = [np.asarray(arr) for arr in data]
         if title is None:
-            title = f"Mixed_Zone_{self.current_zone + 1}"
+            title = f"FEMixed_Zone_{self.current_zone + 1}"
         if variables is None:
             variables = [f"V{i}" for i in range(1, len(data) + 1)]
 
@@ -1142,7 +1142,7 @@ class TecplotSzlWriter(TecplotWriter):
             _resolve_written_type(_infer_data_type(arr.dtype), self.precision)
             for arr in arrays
         ]
-        prepared: PreparedMixedZone | None = prepare_mixed_zone(
+        prepared: PreparedFEMixedZone | None = prepare_femixed_zone(
             arrays,
             variable_types,
             cell_shapes=cell_shapes,
@@ -1205,7 +1205,7 @@ class TecplotSzlWriter(TecplotWriter):
 
         # Write connectivity (if not shared)
         if prepared.con_sharing is None:
-            _write_mixed_connectivity(
+            _write_femixed_connectivity(
                 self._check_handle(),
                 zone_num,
                 prepared.section_node_maps,

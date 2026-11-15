@@ -104,7 +104,7 @@ class ZoneMeta:
     total_face_nodes: int | None = None
     num_boundary_faces: int | None = None
     num_boundary_connections: int | None = None
-    # Mixed zones (FEMIXED) record their per-section layout.
+    # FEMIXED zones record their per-section layout.
     section_shapes: tuple[FeCellShape, ...] | None = None
     section_num_elements: tuple[int, ...] | None = None
     # Per-variable descriptors (length == dataset variable count).

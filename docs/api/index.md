@@ -122,7 +122,7 @@ of which of the three file formats produced or is producing the data. See
 | {class}`~tecio.TecplotZoneReader` | Shared zone interface: title, type, solution time, strand ID, variables, aux data |
 | {class}`~tecio.TecplotOrderedZoneReader` | Adds `I`/`J`/`K`/`dimensions` for IJK-ordered zones |
 | {class}`~tecio.TecplotFEZoneReader` | Adds `node_map`/`nodes_per_cell`/`shared_connectivity` for finite-element zones |
-| {class}`~tecio.TecplotMixedZoneReader` | Adds `section_shapes`/`section_num_elements`/`node_maps` for mixed (FEMIXED) zones, SZL only |
+| {class}`~tecio.TecplotFEMixedZoneReader` | Adds `section_shapes`/`section_num_elements`/`node_maps` for FEMIXED zones, SZL only |
 | {class}`~tecio.TecplotPolyZoneReader` | Adds the face map (`face_nodes`, `face_left_elements`, `face_right_elements`, boundary connections) for polygon and polyhedron zones |
 | {class}`~tecio.TecplotVariableReader` | One variable's metadata and data within a zone |
 | {class}`~tecio.TecplotAuxDataReader` | Read-only, dict-like view of one auxiliary-data mapping |
@@ -136,8 +136,8 @@ of which of the three file formats produced or is producing the data. See
 {class}`~tecio.TecplotZoneReader` returns either
 {class}`~tecio.TecplotOrderedZoneReader`,
 {class}`~tecio.TecplotFEZoneReader`,
-{class}`~tecio.TecplotMixedZoneReader` or
-{class}`~tecio.TecplotPolyZoneReader` for structured, unstructured, mixed and
+{class}`~tecio.TecplotFEMixedZoneReader` or
+{class}`~tecio.TecplotPolyZoneReader` for structured, unstructured, FEMIXED and
 polygon/polyhedron data respectivly as these zone types have properties that
 are not shared (e.g. `dimensions` vs. `node_map` vs. `face_nodes`). Accessing a zone property no included in
 the zone type raises `AttributeError`. To check, use `isinstance(zone,
@@ -186,7 +186,7 @@ name-based and slice-based access:
 with tecio.open("flow.szplt") as r:
     r.zones[
         0
-    ]  # -> TecplotOrderedZoneReader, TecplotFEZoneReader, TecplotMixedZoneReader, ...
+    ]  # -> TecplotOrderedZoneReader, TecplotFEZoneReader, TecplotFEMixedZoneReader, ...
     r.zones[1:4]  # -> ZoneList (sub-range, same kind)
     r.zones[0].variables  # -> VariableList
     r.zones[0].variables["x"]  # -> TecplotVariableReader, by exact name

@@ -939,7 +939,7 @@ class TecplotDatWriter(TecplotWriter):
             )
         )
 
-    def write_mixed_zone(
+    def write_femixed_zone(
         self,
         data: Sequence[npt.ArrayLike],
         cell_shapes: Sequence[FeCellShape | int | str] | None = None,
@@ -956,17 +956,17 @@ class TecplotDatWriter(TecplotWriter):
         aux: dict[str, Any] | None = None,
         datapacking: DataPacking | str = DataPacking.BLOCK,
     ) -> None:
-        """Not supported: DAT files cannot hold mixed (FEMIXED) zones.
+        """Not supported: DAT files cannot hold FEMIXED zones.
 
-        The signature matches :meth:`TecplotSzlWriter.write_mixed_zone` so every writer
-        exposes the same interface.
+        The signature matches :meth:`TecplotSzlWriter.write_femixed_zone` so every
+        writer exposes the same interface.
 
         Raises:
             NotImplementedError: Always. Write a ``.szplt`` file instead, see
-                :meth:`TecplotSzlWriter.write_mixed_zone`.
+                :meth:`TecplotSzlWriter.write_femixed_zone`.
         """
         raise NotImplementedError(
-            "The DAT file format does not support mixed finite-element (FEMIXED) "
+            "The DAT file format does not support FEMIXED (mixed finite-element) "
             "zones. Write a .szplt file instead."
         )
 

@@ -100,18 +100,18 @@ if isinstance(zone, tecio.TecplotOrderedZoneReader):
     zone.dimensions  # (I, J, K)
 elif isinstance(zone, tecio.TecplotFEZoneReader):
     zone.node_map  # ndarray | None
-elif isinstance(zone, tecio.TecplotMixedZoneReader):
+elif isinstance(zone, tecio.TecplotFEMixedZoneReader):
     zone.node_maps  # tuple of ndarray, one per section
 elif isinstance(zone, tecio.TecplotPolyZoneReader):
     zone.face_nodes  # ndarray
 ```
 
 `TecplotFEZoneReader` covers the classic finite-element types. FEMIXED zones
-are returned as `TecplotMixedZoneReader` (SZL only). FEPOLYGON and FEPOLYHEDRON
+are returned as `TecplotFEMixedZoneReader` (SZL only). FEPOLYGON and FEPOLYHEDRON
 zones are returned as `TecplotPolyZoneReader` (PLT v111 and later, and DAT; SZL
 does not yet support poly zones).
 
-### Mixed zones
+### FEMIXED zones
 
 A FEMIXED zone holds 1 to 16 sections. Every cell in a section has the same
 shape, and all sections share one spatial dimension (all line, all surface or
@@ -134,7 +134,7 @@ for shape, node_map in zip(zone.section_shapes, zone.node_maps):
 ```
 
 Only linear sections (grid order 1) are supported, and face-neighbor
-connections are not read for mixed zones.
+connections are not read for FEMIXED zones.
 
 ### Poly zones
 
@@ -165,7 +165,7 @@ face-neighbor connections.
    TecplotZoneReader
    TecplotOrderedZoneReader
    TecplotFEZoneReader
-   TecplotMixedZoneReader
+   TecplotFEMixedZoneReader
    TecplotPolyZoneReader
 ```
 

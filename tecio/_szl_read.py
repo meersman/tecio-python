@@ -4,9 +4,9 @@ Small scalar zone metadata (title, type, dimensions or node/element counts, solu
 time, strand ID, shared connectivity) is queried once, at zone construction, and frozen
 by :class:`~tecio._reader.TecplotOrderedZoneReader` /
 :class:`~tecio._reader.TecplotFEZoneReader` /
-:class:`~tecio._reader.TecplotMixedZoneReader`. Variable metadata is queried live, on each
-access, it's a single cheap C call either way. Variable data arrays and node maps are
-read lazily, on first access, straight from the C library.
+:class:`~tecio._reader.TecplotFEMixedZoneReader`. Variable metadata is queried live,
+on each access, it's a single cheap C call either way. Variable data arrays and node
+maps are read lazily, on first access, straight from the C library.
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ from ._containers import ZoneList
 from ._elements import CELL_SHAPE_NUM_NODES
 from ._reader import (
     TecplotAuxDataReader,
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotReader,
     TecplotVariableReader,
@@ -462,8 +462,8 @@ class TecplotSzlFEZoneReader(TecplotFEZoneReader):
         return TecplotSzlZoneAuxDataReader(self._handle, self.zone_index + 1)
 
 
-class TecplotSzlMixedZoneReader(TecplotMixedZoneReader):
-    """Mixed finite-element (FEMIXED) zone reader for SZL files.
+class TecplotSzlFEMixedZoneReader(TecplotFEMixedZoneReader):
+    """FEMIXED (mixed finite-element) zone reader for SZL files.
 
     Scalar metadata and the section layout are queried from the C library once, at
     construction, and frozen by the base class. The variable list, node maps, and aux
@@ -577,7 +577,7 @@ def _build_szl_zone(
             "are not yet supported in SZPLT files."
         )
     if zone_type == ZoneType.FEMIXED:
-        return TecplotSzlMixedZoneReader(handle, zone_index, num_vars)
+        return TecplotSzlFEMixedZoneReader(handle, zone_index, num_vars)
     return TecplotSzlFEZoneReader(handle, zone_index, num_vars)
 
 

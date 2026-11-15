@@ -40,9 +40,11 @@ from typing import Any
 
 import numpy as np
 import pytest
+from create_test_data import create_femixed_volume
+from helpers import reordered_node_maps
 
 import tecio
-from tecio import ZoneType
+from tecio import ValueLocation, ZoneType
 from tecio.cli.tec2mat import main as tec2mat
 from tecio.cli.tecaux import main as tecaux
 from tecio.cli.tecdump import main as tecdump
@@ -2847,6 +2849,223 @@ class TestCliPoly:
         assert (zone.face_right_elements == 0).sum() == 330  # faces with one element
         assert not hasattr(zone, "boundary_connection_counts")
         np.testing.assert_array_equal(zone.var_4, np.arange(1, 5203))
+
+
+# --------------------------------------------------------------------------------------
+# FEMIXED zones (SZPLT only)
+#
+# Each test writes a file with one FEMIXED zone of four sections (a tetrahedron, a
+# pyramid, a prism and a hexahedron), then runs the tool on it.
+# --------------------------------------------------------------------------------------
+
+
+class TestCliFEMixed:
+    """Every tool on a FEMIXED zone, which only SZPLT files can hold."""
+
+    def test_tecdump_prints_sections(self, tmp_path: Path, capsys) -> None:
+        """tecdump reports the zone type, the sections and their node maps."""
+        x, y, z, shapes, maps = create_femixed_volume()
+        src = tmp_path / "volume.szplt"
+        with tecio.open(str(src), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z"],
+            )
+
+        assert tecdump([str(src)]) == 0
+
+        out = capsys.readouterr().out
+        assert "FEMIXED" in out
+        line = next(ln for ln in out.splitlines() if "Num Sections" in ln)
+        assert line.split(":")[1].strip() == "4"
+        for shape in shapes:
+            assert shape.name in out
+
+    @pytest.mark.parametrize(
+        "tool,extra",
+        [
+            (tecextract, []),
+            (tecfix, []),
+            (tecscale, ["-v", "x", "-s", "1.0"]),
+            (tecaux, ["-d", "Solver=Test"]),
+            (tecslice, ["-i", "::2"]),
+        ],
+        ids=["tecextract", "tecfix", "tecscale", "tecaux", "tecslice"],
+    )
+    def test_rewrite_tools_keep_femixed_zone(
+        self, tool: Any, extra: list[str], tmp_path: Path
+    ) -> None:
+        """Each tool that rewrites a file writes the FEMIXED zone back unchanged."""
+        x, y, z, shapes, maps = create_femixed_volume()
+        pressure = np.array([1.0, 2.0, 3.0, 4.0])
+        src = tmp_path / "volume.szplt"
+        with tecio.open(str(src), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z, pressure],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z", "p"],
+                value_locations=[ValueLocation.NODAL] * 3
+                + [ValueLocation.CELL_CENTERED],
+                title="Volume",
+                solution_time=1.5,
+                strand_id=1,
+            )
+        dst = tmp_path / "out.szplt"
+
+        assert tool([*extra, "-o", str(dst), "--force", str(src)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            assert r.num_zones == 1
+            zone = r.zones[0]
+            assert isinstance(zone, tecio.TecplotFEMixedZoneReader)
+            assert zone.title == "Volume"
+            assert (zone.solution_time, zone.strand_id) == (1.5, 1)
+            assert zone.section_shapes == tuple(shapes)
+            assert zone.section_num_elements == (1, 1, 1, 1)
+            assert zone.num_nodes == 18
+            node_order = tecio.match_nodes([x, y, z], zone.get_array(["x", "y", "z"]))
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, zone.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(zone.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+            np.testing.assert_array_equal(
+                zone.variables["p"].values[cell_order], pressure
+            )
+
+    def test_tecscale_scales_nodal_variable(self, tmp_path: Path) -> None:
+        """Only the scaled variable changes, node maps and sections are untouched."""
+        x, y, z, shapes, maps = create_femixed_volume()
+        src = tmp_path / "volume.szplt"
+        with tecio.open(str(src), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z"],
+            )
+        dst = tmp_path / "scaled.szplt"
+
+        assert tecscale(["-v", "x", "-s", "2.0", "-o", str(dst), str(src)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            zone = r.zones[0]
+            node_order = tecio.match_nodes(
+                [2.0 * x, y, z], zone.get_array(["x", "y", "z"])
+            )
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, zone.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(zone.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+            for name, want in zip("xyz", (2.0 * x, y, z), strict=True):
+                np.testing.assert_array_equal(
+                    zone.variables[name].values[node_order], want
+                )
+
+    def test_tecmerge_two_files(self, tmp_path: Path) -> None:
+        """Merging two files gives one FEMIXED zone for each, in file order."""
+        x, y, z, shapes, maps = create_femixed_volume()
+        sources = [tmp_path / "first.szplt", tmp_path / "second.szplt"]
+        for src, scale in zip(sources, (1.0, 3.0), strict=True):
+            with tecio.open(str(src), "w") as w:
+                w.write_femixed_zone(
+                    data=[x * scale, y, z],
+                    cell_shapes=shapes,
+                    node_maps=maps,
+                    variables=["x", "y", "z"],
+                )
+        dst = tmp_path / "merged.szplt"
+
+        assert tecmerge(["-o", str(dst), *map(str, sources)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            assert r.num_zones == 2
+            for zone, scale in zip(r.zones, (1.0, 3.0), strict=True):
+                assert isinstance(zone, tecio.TecplotFEMixedZoneReader)
+                assert zone.section_shapes == tuple(shapes)
+                node_order = tecio.match_nodes(
+                    [x * scale, y, z], zone.get_array(["x", "y", "z"])
+                )
+                assert node_order is not None
+                cell_order = tecio.match_cells(maps, zone.node_maps, node_order)
+                assert cell_order is not None
+                for got, want in zip(
+                    reordered_node_maps(zone.node_maps, node_order, cell_order),
+                    maps,
+                    strict=True,
+                ):
+                    np.testing.assert_array_equal(got, want)
+
+    def test_teconvert_to_plt_is_refused(self, tmp_path: Path, capsys) -> None:
+        """PLT cannot hold FEMIXED zones: exit code 1 and a message naming the type."""
+        x, y, z, shapes, maps = create_femixed_volume()
+        src = tmp_path / "volume.szplt"
+        with tecio.open(str(src), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z"],
+            )
+        dst = tmp_path / "out.plt"
+
+        assert teconvert(["-plt", "-o", str(dst), "--force", str(src)]) == 1
+
+        assert "FEMIXED" in capsys.readouterr().err
+
+    @pytest.mark.skipif(sio is None, reason="scipy is required by tec2mat itself")
+    def test_tec2mat_exports_sections(self, tmp_path: Path) -> None:
+        """The MATLAB struct holds the section layout and the 1-based node maps."""
+        x, y, z, shapes, maps = create_femixed_volume()
+        src = tmp_path / "volume.szplt"
+        with tecio.open(str(src), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z"],
+            )
+        dst = tmp_path / "volume.mat"
+
+        assert tec2mat(["-o", str(dst), str(src)]) == 0
+
+        zone = _struct(_load_mat(dst), "zone_1")
+        assert int(zone.num_sections) == 4
+        assert list(zone.section_shapes) == [shape.name for shape in shapes]
+        assert list(zone.section_num_elements) == [1, 1, 1, 1]
+        node_order = tecio.match_nodes([x, y, z], [zone.var_1, zone.var_2, zone.var_3])
+        assert node_order is not None
+        cell_order = tecio.match_cells(
+            maps,
+            [np.atleast_2d(getattr(zone, f"node_map_{k}")) - 1 for k in range(1, 5)],
+            node_order,
+        )
+        assert cell_order is not None
+        for got, want in zip(
+            reordered_node_maps(
+                [
+                    np.atleast_2d(getattr(zone, f"node_map_{k}")) - 1
+                    for k in range(1, 5)
+                ],
+                node_order,
+                cell_order,
+            ),
+            maps,
+            strict=True,
+        ):
+            np.testing.assert_array_equal(got, want)
 
 
 # --------------------------------------------------------------------------------------

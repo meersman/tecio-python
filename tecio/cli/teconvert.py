@@ -86,8 +86,8 @@ from typing import Any
 import numpy as np
 
 from .. import (
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotReader,
@@ -282,9 +282,9 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
                 **({} if con_sharing is not None else poly_face_kwargs(zone)),
                 **common_kw,
             )
-        elif isinstance(zone, TecplotMixedZoneReader):
+        elif isinstance(zone, TecplotFEMixedZoneReader):
             con_sharing = zone.shared_connectivity
-            writer.write_mixed_zone(
+            writer.write_femixed_zone(
                 data=data,
                 cell_shapes=None if con_sharing is not None else zone.section_shapes,
                 node_maps=None if con_sharing is not None else zone.node_maps,
@@ -293,7 +293,7 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
             )
         else:
             raise NotImplementedError(
-                f"Zone '{zone.title}' is not an ordered, FE, mixed or poly zone; "
+                f"Zone '{zone.title}' is not an ordered, FE, FEMIXED or poly zone; "
                 "conversion is not supported for it."
             )
 

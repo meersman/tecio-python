@@ -53,8 +53,8 @@ from ._plt_read import TecplotPltReader, _is_legacy_plt
 from ._plt_write import TecplotPltWriter
 from ._reader import (
     TecplotAuxDataReader,
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotReader,
@@ -161,8 +161,8 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
         writer: An already-opened ``Write`` instance (file handle live).
 
     Raises:
-        NotImplementedError: If a zone is neither ordered, finite-element, mixed, nor
-            poly, or if the writer's format cannot hold a mixed zone (PLT and DAT).
+        NotImplementedError: If a zone is neither ordered, finite-element, FEMIXED, nor
+            poly, or if the writer's format cannot hold a FEMIXED zone (PLT and DAT).
 
     """
     for zone in reader.zones:
@@ -215,9 +215,9 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
                 con_sharing=con_sharing,
                 **common_kw,
             )
-        elif isinstance(zone, TecplotMixedZoneReader):
+        elif isinstance(zone, TecplotFEMixedZoneReader):
             con_sharing = zone.shared_connectivity
-            writer.write_mixed_zone(
+            writer.write_femixed_zone(
                 data=data,
                 cell_shapes=None if con_sharing is not None else zone.section_shapes,
                 node_maps=None if con_sharing is not None else zone.node_maps,
@@ -226,7 +226,7 @@ def _copy_zones(reader: TecplotReader, writer: TecplotWriter) -> None:
             )
         else:
             raise NotImplementedError(
-                f"Zone '{zone.title}' is neither an ordered, classic FE, mixed, nor "
+                f"Zone '{zone.title}' is neither an ordered, classic FE, FEMIXED, nor "
                 "poly zone, copying it is not supported by the Write API yet."
             )
 
@@ -383,11 +383,11 @@ class AppendWrite:
         """
         self._writer.write_fe_zone(*args, **kwargs)
 
-    def write_mixed_zone(self, *args: Any, **kwargs: Any) -> None:  # noqa: D417
-        """Append a mixed finite-element (FEMIXED) zone.
+    def write_femixed_zone(self, *args: Any, **kwargs: Any) -> None:  # noqa: D417
+        """Append a FEMIXED (mixed finite-element) zone.
 
-        Delegates to the underlying format writer's ``write_mixed_zone``
-        (e.g. :meth:`tecio.TecplotSzlWriter.write_mixed_zone`). The ``variables``
+        Delegates to the underlying format writer's ``write_femixed_zone``
+        (e.g. :meth:`tecio.TecplotSzlWriter.write_femixed_zone`). The ``variables``
         parameter is not meaningful here, the variable list is fixed from the existing
         file. All indices are 0-based.
 
@@ -399,22 +399,22 @@ class AppendWrite:
                 (1 to 16), all of one spatial dimension.
             node_maps (Sequence[array-like] | None): One ``(num_cells, nodes_per_cell)``
                 0-based integer array per section.
-            title (str | None): Zone title. Defaults to ``"Mixed_Zone_{n}"``.
+            title (str | None): Zone title. Defaults to ``"FEMixed_Zone_{n}"``.
             value_locations (Sequence[ValueLocation] | None): Per-variable value
                 location for active variables. Defaults to all NODAL.
             passive_vars (list | tuple | set | None): Variables to mark passive.
             var_sharing (dict[str | int, int] | None): ``{variable: source zone}``.
-            con_sharing (int | None): Mixed zone to share connectivity from (0-based),
+            con_sharing (int | None): FEMIXED zone to share connectivity from (0-based),
                 in which case ``cell_shapes`` and ``node_maps`` must be omitted.
             solution_time (float): Solution time. Defaults to ``0.0``.
             strand_id (int): Strand ID. Defaults to ``0``.
             aux (dict[str, str] | None): Zone-level auxiliary data.
 
         Raises:
-            NotImplementedError: For PLT and DAT files, which cannot hold mixed zones.
+            NotImplementedError: For PLT and DAT files, which cannot hold FEMIXED zones.
             ValueError: On an inconsistent section layout.
         """
-        self._writer.write_mixed_zone(*args, **kwargs)
+        self._writer.write_femixed_zone(*args, **kwargs)
 
     def write_poly_zone(self, *args: Any, **kwargs: Any) -> None:  # noqa: D417
         """Append a polygon or polyhedron (face-based) zone.
@@ -821,7 +821,7 @@ def open(
              - Variable name list. For SZL and PLT this may be deferred to the first
                :meth:`~tecio.TecplotWriter.write_ordered_zone`,
                :meth:`~tecio.TecplotWriter.write_fe_zone`,
-               :meth:`~tecio.TecplotWriter.write_mixed_zone`, or
+               :meth:`~tecio.TecplotWriter.write_femixed_zone`, or
                :meth:`~tecio.TecplotWriter.write_poly_zone` call. Required at open time
                for DAT.
            * - ``file_type``

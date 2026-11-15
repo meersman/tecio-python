@@ -1204,7 +1204,7 @@ class TecplotReader(VTKPythonAlgorithmBase):
                     f"zone type {zone.zone_type.name} is not yet supported by this "
                     "reader (only ORDERED, classic FE zones -- line, triangle, "
                     "quadrilateral, tetrahedron, brick -- polygon, and polyhedron "
-                    "zones are converted; mixed zones are not)"
+                    "zones are converted; FEMIXED zones are not)"
                 )
             dataset = self._build_unstructured_grid(
                 zone, cell_type, x_name, y_name, z_name

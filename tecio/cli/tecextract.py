@@ -100,8 +100,8 @@ from typing import Any
 import numpy as np
 
 from .. import (
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotSzlWriter,
@@ -487,12 +487,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             con_sharing=con_remapped,
                             **fe_kw,
                         )
-                    elif isinstance(zone, TecplotMixedZoneReader):
+                    elif isinstance(zone, TecplotFEMixedZoneReader):
                         con_src = zone.shared_connectivity
                         con_remapped = (
                             zone_index_map.get(con_src) if con_src is not None else None
                         )
-                        writer.write_mixed_zone(
+                        writer.write_femixed_zone(
                             data=data,
                             cell_shapes=(
                                 None
@@ -508,7 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else:
                         raise NotImplementedError(
                             f"Zone '{zone.title}' is neither an ordered, classic FE, "
-                            "mixed nor poly zone; extraction is not supported for it."
+                            "FEMIXED nor poly zone; extraction is not supported for it."
                         )
 
                     # Record where this source zone landed in the output, so a later

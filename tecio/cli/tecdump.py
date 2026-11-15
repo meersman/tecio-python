@@ -80,8 +80,8 @@ from collections.abc import Sequence
 import numpy as np
 
 from .. import (
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
 )
@@ -217,7 +217,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     elif isinstance(zone, TecplotFEZoneReader):
                         print(f"  Num Nodes            : {zone.num_nodes}")
                         print(f"  Num Elements         : {zone.num_elements}")
-                    elif isinstance(zone, TecplotMixedZoneReader):
+                    elif isinstance(zone, TecplotFEMixedZoneReader):
                         print(f"  Num Nodes            : {zone.num_nodes}")
                         print(f"  Num Elements         : {zone.num_elements}")
                         print(f"  Num Sections         : {zone.num_sections}")
@@ -279,8 +279,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             )
                             print(f"  Face Connections     : {value_str}")
 
-                    # Show the section node maps for mixed zones
-                    if isinstance(zone, TecplotMixedZoneReader):
+                    # Show the section node maps for FEMIXED zones
+                    if isinstance(zone, TecplotFEMixedZoneReader):
                         for k, node_map in enumerate(zone.node_maps):
                             _print_array(f"Section {k} Node Map", node_map)
 

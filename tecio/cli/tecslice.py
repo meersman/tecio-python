@@ -134,8 +134,8 @@ from typing import Any, NamedTuple
 import numpy as np
 
 from .. import (
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotSzlWriter,
@@ -538,7 +538,7 @@ def _zone_sources(zone: TecplotZoneReader) -> dict[int, set[str]]:
             sources.setdefault(sv, set()).add(var.name)
     if (
         isinstance(
-            zone, (TecplotFEZoneReader, TecplotMixedZoneReader, TecplotPolyZoneReader)
+            zone, (TecplotFEZoneReader, TecplotFEMixedZoneReader, TecplotPolyZoneReader)
         )
         and zone.shared_connectivity is not None
     ):
@@ -695,9 +695,9 @@ def _write_zone_verbatim(
             con_sharing=zone_map[con_sharing] if con_sharing is not None else None,
             **fe_kw,
         )
-    elif isinstance(zone, TecplotMixedZoneReader):
+    elif isinstance(zone, TecplotFEMixedZoneReader):
         con_sharing = zone.shared_connectivity
-        writer.write_mixed_zone(
+        writer.write_femixed_zone(
             data=data,
             cell_shapes=None if con_sharing is not None else zone.section_shapes,
             node_maps=None if con_sharing is not None else zone.node_maps,
@@ -706,7 +706,7 @@ def _write_zone_verbatim(
         )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered, classic FE, mixed nor poly "
+            f"Zone '{zone.title}' is neither an ordered, classic FE, FEMIXED nor poly "
             "zone; writing is not supported for it."
         )
 
@@ -793,9 +793,9 @@ def _write_zone_protected(
             con_sharing=con_sharing,
             **fe_kw,
         )
-    elif isinstance(zone, TecplotMixedZoneReader):
+    elif isinstance(zone, TecplotFEMixedZoneReader):
         con_sharing = zone.shared_connectivity
-        writer.write_mixed_zone(
+        writer.write_femixed_zone(
             data=writer_data,
             cell_shapes=None if con_sharing is not None else zone.section_shapes,
             node_maps=None if con_sharing is not None else zone.node_maps,
@@ -804,7 +804,7 @@ def _write_zone_protected(
         )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered, classic FE, mixed nor poly "
+            f"Zone '{zone.title}' is neither an ordered, classic FE, FEMIXED nor poly "
             "zone; writing is not supported for it."
         )
 

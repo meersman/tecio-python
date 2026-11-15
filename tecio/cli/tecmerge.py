@@ -171,8 +171,8 @@ from typing import Any
 import numpy as np
 
 from .. import (
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotReader,
@@ -734,10 +734,10 @@ def _write_zone(
             con_sharing=con_remapped,
             **fe_kw,
         )
-    elif isinstance(zone, TecplotMixedZoneReader):
+    elif isinstance(zone, TecplotFEMixedZoneReader):
         con_src = zone.shared_connectivity
         con_remapped = zone_index_map.get(con_src) if con_src is not None else None
-        writer.write_mixed_zone(
+        writer.write_femixed_zone(
             data=data,
             cell_shapes=None if con_remapped is not None else zone.section_shapes,
             node_maps=None if con_remapped is not None else zone.node_maps,
@@ -746,7 +746,7 @@ def _write_zone(
         )
     else:
         raise NotImplementedError(
-            f"Zone '{zone.title}' is neither an ordered, classic FE, mixed nor poly "
+            f"Zone '{zone.title}' is neither an ordered, classic FE, FEMIXED nor poly "
             "zone; merging is not supported for it."
         )
 

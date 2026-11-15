@@ -188,8 +188,8 @@ from typing import Any
 import numpy as np
 
 from .. import (
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotReader,
@@ -371,7 +371,7 @@ def _zone_to_dict(zone: TecplotZoneReader, num_vars: int) -> dict[str, Any]:
     elif isinstance(zone, (TecplotFEZoneReader, TecplotPolyZoneReader)):
         d["num_nodes"] = int(zone.num_nodes)
         d["num_elements"] = int(zone.num_elements)
-    elif isinstance(zone, TecplotMixedZoneReader):
+    elif isinstance(zone, TecplotFEMixedZoneReader):
         d["num_nodes"] = int(zone.num_nodes)
         d["num_elements"] = int(zone.num_elements)
         d["num_sections"] = np.int32(zone.num_sections)
@@ -439,7 +439,7 @@ def _zone_to_dict(zone: TecplotZoneReader, num_vars: int) -> dict[str, Any]:
     # zone_<src>.node_map themselves.
     if isinstance(zone, TecplotPolyZoneReader):
         _add_poly_face_map(d, zone)
-    elif isinstance(zone, TecplotMixedZoneReader):
+    elif isinstance(zone, TecplotFEMixedZoneReader):
         # One node map per section, ``node_map_1``, ``node_map_2``, ..., 1-based.
         con_src = zone.shared_connectivity
         if con_src is not None:

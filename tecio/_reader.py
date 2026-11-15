@@ -3,7 +3,7 @@
 Every format's reader (SZL, PLT, DAT) exposes the same interface: :class:`TecplotReader`
 (the open file/dataset), :class:`TecplotZoneReader` (one zone, split into
 :class:`TecplotOrderedZoneReader`, :class:`TecplotFEZoneReader`,
-:class:`TecplotMixedZoneReader`, and :class:`TecplotPolyZoneReader` since the
+:class:`TecplotFEMixedZoneReader`, and :class:`TecplotPolyZoneReader` since the
 topologies don't share properties like dimensions or connectivity),
 :class:`TecplotVariableReader` (one variable within a zone, not split by value location
 or zone topology, neither changes which properties exist, only the shape
@@ -962,14 +962,14 @@ class TecplotFEZoneReader(TecplotZoneReader):
 
 
 # ======================================================================================
-# TecplotMixedZoneReader
+# TecplotFEMixedZoneReader
 # ======================================================================================
 
 
-class TecplotMixedZoneReader(TecplotZoneReader):
+class TecplotFEMixedZoneReader(TecplotZoneReader):
     """Read-only handle to one FEMIXED (mixed finite-element) zone.
 
-    A mixed zone holds 1 to 16 sections. Every cell in a section has the same shape,
+    A FEMIXED zone holds 1 to 16 sections. Every cell in a section has the same shape,
     and all sections share one spatial dimension (all line, all surface or all volume
     cells). Cell numbering runs through the sections in order, so cell-centered
     variables hold ``num_elements`` values, the cells of section 0 first. All indices
@@ -1068,7 +1068,7 @@ class TecplotMixedZoneReader(TecplotZoneReader):
 
         The arrays are views of one allocation, loaded on first access. Node indices are
         0-based. Passing :attr:`section_shapes` and :attr:`node_maps` to
-        :meth:`~tecio.TecplotSzlWriter.write_mixed_zone` writes the zone back.
+        :meth:`~tecio.TecplotSzlWriter.write_femixed_zone` writes the zone back.
         """
         node_maps = self._node_maps_cache
         if node_maps is None:

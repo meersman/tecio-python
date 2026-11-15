@@ -5,6 +5,8 @@
 import numpy as np
 import numpy.typing as npt
 
+from tecio import FeCellShape
+
 # ======================================================================================
 # Functions to create all supported Tecplot data formats
 # ======================================================================================
@@ -303,6 +305,60 @@ def create_fe_brick() -> tuple[
     return x, y, z, faces, nodes
 
 
+def create_fe_padded_brick() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.int64],
+]:
+    """Create a FEBRICK zone with padded cells of every solid shape.
+
+    A cell with fewer than 8 corners repeats nodes to fill the brick. The six cells are
+    interleaved so that grouping them by shape moves every cell. Nodes 0-7 are the
+    corners of the unit cube, node 8 is above it, node 9 below it and nodes 10 and 11
+    beside it:
+
+    Cell 0: tetrahedron   [0, 1, 3, 3, 4, 4, 4, 4]
+    Cell 1: pyramid       [4, 5, 6, 7, 8, 8, 8, 8]       base on the top face
+    Cell 2: hexahedron    [0, 1, 2, 3, 4, 5, 6, 7]
+    Cell 3: tetrahedron   [1, 10, 2, 2, 6, 6, 6, 6]
+    Cell 4: prism         [1, 10, 10, 2, 5, 11, 11, 6]
+    Cell 5: pyramid       [0, 3, 2, 1, 9, 9, 9, 9]       base on the bottom face
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates and the node map.
+    """
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],  # 0
+            [1.0, 0.0, 0.0],  # 1
+            [1.0, 1.0, 0.0],  # 2
+            [0.0, 1.0, 0.0],  # 3
+            [0.0, 0.0, 1.0],  # 4
+            [1.0, 0.0, 1.0],  # 5
+            [1.0, 1.0, 1.0],  # 6
+            [0.0, 1.0, 1.0],  # 7
+            [0.5, 0.5, 2.0],  # 8 - above the cube
+            [0.5, 0.5, -1.0],  # 9 - below the cube
+            [2.0, 0.5, 0.0],  # 10 - beside the cube
+            [2.0, 0.5, 1.0],  # 11 - beside the cube
+        ],
+        dtype=np.float64,
+    )
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    nodes = np.array([
+        [0, 1, 3, 3, 4, 4, 4, 4],  # tetrahedron
+        [4, 5, 6, 7, 8, 8, 8, 8],  # pyramid on the top face
+        [0, 1, 2, 3, 4, 5, 6, 7],  # hexahedron
+        [1, 10, 2, 2, 6, 6, 6, 6],  # tetrahedron
+        [1, 10, 10, 2, 5, 11, 11, 6],  # prism
+        [0, 3, 2, 1, 9, 9, 9, 9],  # pyramid below the bottom face
+    ])
+    return x, y, z, nodes
+
+
 def create_fe_two_bricks() -> tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
@@ -363,28 +419,82 @@ def create_fe_two_bricks() -> tuple[
     return x, y, z, nodes, face_neighbors
 
 
-def create_fe_mixed() -> tuple[
-    npt.NDArray[np.float32],
-    npt.NDArray[np.float32],
-    npt.NDArray[np.float32],
-    npt.NDArray[np.int32],
-    npt.NDArray[np.int32],
+# --------------------------------------------------------------------------------------
+# FEMIXED zones
+#
+# Notes:
+# - A FEMIXED zone is written with one cell shape and one node map per section. A node
+#   map is (num_cells, nodes_per_cell) with 0-based node indices.
+# - Cells are numbered through the sections, so a cell-centered variable lists the cells
+#   of the first section first.
+# - The functions return x, y[, z], cell_shapes, node_maps.
+# --------------------------------------------------------------------------------------
+
+
+def create_femixed_surface() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    list[FeCellShape],
+    list[npt.NDArray[np.int64]],
 ]:
-    """Create a mixed FE zone with one tet, one pyramid, one prism, one hex.
+    """Create coordinates, cell shapes and node maps for a 2-D FEMIXED zone.
 
-    All cells share a common base region, each demonstrating a different
-    3D element type. Returns x, y, z coordinates, concatenated node map,
-    and num_nodes_per_element array (one entry per cell).
+    Two triangles and one quadrilateral, in two sections:
 
-    Cell layout:
-        Cell 0: Tet       (4 nodes)
-        Cell 1: Pyramid   (5 nodes)
-        Cell 2: Prism     (6 nodes)
-        Cell 3: Hex       (8 nodes)
+    3 ----- 4 ----- 5   Section 0 (triangles): C0 = 0-1-4, C1 = 0-4-3
+    | C1  /  |       |  Section 1 (quadrilaterals): C2 = 1-2-5-4
+    |   /  C0|  C2   |
+    | /      |       |
+    0 ----- 1 ----- 2
 
     Returns:
-        NumPy NDArrays for x, y and z coordinates, the node map and the number of nodes
-        per element.
+        NumPy NDArrays for x and y coordinates, the cell shape of each section and the
+        node map of each section.
+    """
+    points = np.array(
+        [
+            [0.0, 0.0],  # 0
+            [1.0, 0.0],  # 1
+            [2.0, 0.0],  # 2
+            [0.0, 1.0],  # 3
+            [1.0, 1.0],  # 4
+            [2.0, 1.0],  # 5
+        ],
+        dtype=np.float64,
+    )
+    x = points[:, 0]
+    y = points[:, 1]
+    cell_shapes = [FeCellShape.TRIANGLE, FeCellShape.QUADRILATERAL]
+    node_maps = [
+        np.array([[0, 1, 4], [0, 4, 3]]),  # section 0: two triangles
+        np.array([[1, 2, 5, 4]]),  # section 1: one quadrilateral
+    ]
+    return x, y, cell_shapes, node_maps
+
+
+def create_femixed_volume() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    list[FeCellShape],
+    list[npt.NDArray[np.int64]],
+]:
+    """Create coordinates, cell shapes and node maps for a 3-D FEMIXED zone.
+
+    One tetrahedron, one pyramid, one prism and one hexahedron side by side, each in
+    its own section (18 nodes, 4 cells):
+
+    Section 0: tetrahedron  base 0-1-2 and apex 16
+    Section 1: pyramid      base 1-4-5-2 and apex 17
+    Section 2: prism        bottom 4-6-5 and top 10-12-11
+    Section 3: hexahedron   bottom 6-8-9-7 and top 12-14-15-13
+
+    Pyramids list the four base nodes counterclockwise as seen from the apex, then the
+    apex. Prisms list one triangle then the other, with node i + 3 above node i.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the cell shape of each section and
+        the node map of each section.
     """
     points = np.array(
         [
@@ -399,7 +509,7 @@ def create_fe_mixed() -> tuple[
             [3.0, 1.0, 0.0],  #  7
             [4.0, 0.0, 0.0],  #  8
             [4.0, 1.0, 0.0],  #  9
-            # Mid layer (z=1)
+            # Upper layer (z=1)
             [2.0, 0.0, 1.0],  # 10
             [2.0, 1.0, 1.0],  # 11
             [3.0, 0.0, 1.0],  # 12
@@ -407,53 +517,100 @@ def create_fe_mixed() -> tuple[
             [4.0, 0.0, 1.0],  # 14
             [4.0, 1.0, 1.0],  # 15
             # Apex nodes
-            [0.5, 0.5, 1.0],  # 16 - tet apex
+            [0.5, 0.5, 1.0],  # 16 - tetrahedron apex
             [1.5, 0.5, 1.0],  # 17 - pyramid apex
         ],
-        dtype=np.float32,
+        dtype=np.float64,
     )
-
     x = points[:, 0]
     y = points[:, 1]
     z = points[:, 2]
+    cell_shapes = [
+        FeCellShape.TETRAHEDRON,
+        FeCellShape.PYRAMID,
+        FeCellShape.PRISM,
+        FeCellShape.HEXAHEDRON,
+    ]
+    node_maps = [
+        np.array([[0, 1, 2, 16]]),
+        np.array([[1, 4, 5, 2, 17]]),
+        np.array([[4, 6, 5, 10, 12, 11]]),
+        np.array([[6, 8, 9, 7, 12, 14, 15, 13]]),
+    ]
+    return x, y, z, cell_shapes, node_maps
 
-    # Cell 0: Tet - base triangle 0,1,2 + apex 16
-    # Cell 1: Pyramid - base quad 1,4,5,2 + apex 17
-    # Cell 2: Prism - bottom tri 4,6,5 + top tri 10,12,11
-    # Cell 3: Hex - bottom quad 6,8,9,7 + top quad 12,14,15,13
+
+def create_femixed_block(
+    n: int = 12,
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    list[FeCellShape],
+    list[npt.NDArray[np.int64]],
+]:
+    """Create a unit-cube-lattice FEMIXED zone with many cells.
+
+    An ``n x n x n`` block of unit cubes on a lattice of ``(n + 1)^3`` nodes. The cubes
+    in the first half of the x direction are hexahedra. Each cube in the second half is
+    cut into six right-handed tetrahedra around its diagonal 0-6. The cells fill the
+    block without gaps, so their volumes add up to ``n^3``:
+
+    Section 0: ``(n // 2) * n * n`` hexahedra (cubes with x index below ``n // 2``)
+    Section 1: ``6 * (n - n // 2) * n * n`` tetrahedra
+
+    Node ``(i, j, k)`` is at ``(i, j, k)`` and has the index
+    ``(i * (n + 1) + j) * (n + 1) + k``.
+
+    Returns:
+        NumPy NDArrays for x, y and z coordinates, the cell shape of each section and
+        the node map of each section.
+    """
+    i, j, k = np.meshgrid(*[np.arange(n + 1)] * 3, indexing="ij")
+    x, y, z = (c.ravel().astype(np.float64) for c in (i, j, k))
+
+    # Corner offsets of a cube, in the node order of a hexahedron
     # fmt: off
-    node_map = np.array(
-        [
-            0, 1, 2, 16,  # tet: 4 nodes
-            1, 4, 5, 2, 17,  # pyramid: 5 nodes
-            4, 6, 5, 10, 12, 11,  # prism: 6 nodes
-            6, 8, 9, 7, 12, 14, 15, 13,  # hex: 8 nodes
-        ],
-    )
+    offsets = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+               (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
     # fmt: on
+    a, b, c = (m.ravel() for m in np.meshgrid(*[np.arange(n)] * 3, indexing="ij"))
+    cube = np.stack(
+        [
+            ((a + di) * (n + 1) + (b + dj)) * (n + 1) + (c + dk)
+            for di, dj, dk in offsets
+        ],
+        axis=1,
+    )  # (num_cubes, 8)
+    in_first_half = a < n // 2
 
-    # One entry per cell: number of nodes in that cell
-    num_nodes_per_element = np.array([4, 5, 6, 8])
+    hexes = cube[in_first_half]
+    # Six tetrahedra around the diagonal from corner 0 to corner 6
+    # fmt: off
+    cuts = [(0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6),
+            (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6)]
+    # fmt: on
+    tets = np.concatenate([cube[~in_first_half][:, cut] for cut in cuts])
+    cell_shapes = [FeCellShape.HEXAHEDRON, FeCellShape.TETRAHEDRON]
+    return x, y, z, cell_shapes, [hexes, tets]
 
-    return x, y, z, node_map, num_nodes_per_element
 
-
-# ======================================================================================
+# --------------------------------------------------------------------------------------
 # Face-based (FEPOLYGON / FEPOLYHEDRON) zones
 #
-# Notesl:
-# - Nodes and elements start at 0, -1 in the left/right arrays means no element, and -(b +
-#   2) references connected boundary face b of the boundary connection arrays. A polygon
-#   face (edge) runs from its first to its second node with the left element on its
-#   left. A polyhedron face lists its nodes so the right-hand rule normal points out of
-#   the left element.
+# Notes:
+# - Nodes and elements start at 0, -1 in the left/right arrays means no element, and -(b
+#   + 2) references connected boundary face b of the boundary connection arrays. A
+#   polygon face (edge) runs from its first to its second node with the left element on
+#   its left. A polyhedron face lists its nodes so the right-hand rule normal points out
+#   of the left element.
 # The functions return:
 #   polygons:    x, y, face_nodes (num_faces, 2), face_left, face_right
 #   polyhedra:   x, y, z, face_nodes (flat), face_node_counts, face_left, face_right
 # The "coarse" boundary connection zones also return bconn_counts, bconn_elems and
 # bconn_zones, which hold the elements and zones that every connected boundary face
 # touches.
-# ======================================================================================
+# --------------------------------------------------------------------------------------
 
 
 def _split_faces(

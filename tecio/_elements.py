@@ -19,12 +19,16 @@ nodes have the right face counts but not the right number of edges is not recogn
 
 Node indices are never changed, so nodal and cell-centered variables stay valid for a
 collapsed zone. Only the node map changes. :func:`split_cells_by_shape` goes further and
-separates the cells by shape for a mixed (``FEMIXED``) zone. A pyramid lists the four
+separates the cells by shape for a ``FEMIXED`` zone. A pyramid lists the four
 nodes of its base and then its apex, a prism lists one triangle and then the node above
 each of its nodes, and both keep the handedness of the brick they came from.
 
 :func:`cell_face_neighbors` finds, for every face of every cell, the cell on the other
 side from the node map alone.
+
+:func:`match_nodes` and :func:`match_cells` find how the nodes and cells of a zone are
+ordered relative to a reference zone with the same grid, such as the same mesh read from
+SZPLT, which may reorder large zones, and from PLT or DAT.
 
 :func:`faces_by_element` and :func:`nodes_by_element` list the faces and the nodes of
 every element from the left and right element of each face for polygon or polyhedral
@@ -54,6 +58,8 @@ __all__ = [
     "collapsed_zone_type",
     "degenerate_edges",
     "expand_cells",
+    "match_cells",
+    "match_nodes",
     "shape_counts",
     "split_cells_by_shape",
 ]
@@ -144,11 +150,11 @@ _BRICK_FACES = (
     (3, 0, 4, 7),
 )
 
-# Corners of a pyramid in mixed-zone node order (the pyramid base runs counterclockwise
+# Corners of a pyramid in FEMIXED node order (the pyramid base runs counterclockwise
 # seen from the apex side).
 _PYRAMID_CORNERS = ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1))
 
-# Corners of a prism in mixed-zone node order (node 3 of the prism is above node 0).
+# Corners of a prism in FEMIXED node order (node 3 of the prism is above node 0).
 _PRISM_CORNERS = ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (0, 1, 1))
 
 # Nodes of each face as positions in the cell's node list.
@@ -653,11 +659,11 @@ def collapse_cells(
 def split_cells_by_shape(
     node_map: npt.ArrayLike, zone_type: ZoneType
 ) -> dict[FeCellShape, tuple[npt.NDArray[np.intp], npt.NDArray[np.integer]]]:
-    """Separate the cells of a zone by shape, for a mixed (``FEMIXED``) zone.
+    """Separate the cells of a zone by shape, for a ``FEMIXED`` zone.
 
     Every cell is reduced to its collapsed shape: ``FEBRICK`` cells give tetrahedra,
     pyramids, prisms and hexahedra and ``FEQUADRILATERAL`` cells give triangles and
-    quadrilaterals. Repeated nodes are dropped, the nodes are in the order of a mixed
+    quadrilaterals. Repeated nodes are dropped, the nodes are in the order of a FEMIXED
     zone section and the handedness of each cell is kept. Node indices are unchanged.
 
     Cells are numbered through the sections in the order returned, so a cell-centered
@@ -1004,6 +1010,183 @@ def cell_face_neighbors(
     neighbors[a] = cell_b
     neighbors[b] = cell_a
     return np.ascontiguousarray(neighbors.reshape(num_faces, num_cells).T)
+
+
+# --------------------------------------------------------------------------------------
+# Matching zones that are stored in another order
+# --------------------------------------------------------------------------------------
+
+
+def _as_cell_nodes(node_map: npt.ArrayLike) -> npt.NDArray[np.integer]:
+    """Validate one node map for :func:`match_cells`.
+
+    Returns:
+        The node map as an integer array.
+
+    Raises:
+        ValueError: If it is not a two-dimensional integer array or holds a negative
+            index.
+    """
+    arr = np.asarray(node_map)
+    if arr.ndim != 2 or not np.issubdtype(arr.dtype, np.integer):
+        raise ValueError("node maps must be two-dimensional integer arrays.")
+    if arr.size and int(arr.min()) < 0:
+        raise ValueError("node maps hold negative node indices.")
+    return arr
+
+
+def _hash_cells(
+    nodes: npt.NDArray[np.integer],
+    wide: npt.NDArray[np.uint64],
+    narrow: npt.NDArray[np.uint32],
+    renumber: npt.NDArray[np.intp] | None = None,
+) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint32]]:
+    """Hash each cell by summing the hashes of its nodes, in chunks of cells.
+
+    Node indices are renumbered first when *renumber* is given. The sums wrap, so they
+    do not depend on the order of the nodes in a cell. A repeated node counts each time.
+
+    Returns:
+        The 64-bit and the 32-bit hash of each cell.
+    """
+    num_cells = len(nodes)
+    cell_wide = np.empty(num_cells, dtype=np.uint64)
+    cell_narrow = np.empty(num_cells, dtype=np.uint32)
+    for lo in range(0, num_cells, _CHUNK_CELLS):
+        chunk = nodes[lo : lo + _CHUNK_CELLS]
+        if renumber is not None:
+            chunk = renumber[chunk]
+        cell_wide[lo : lo + len(chunk)] = wide[chunk].sum(axis=1, dtype=np.uint64)
+        cell_narrow[lo : lo + len(chunk)] = narrow[chunk].sum(axis=1, dtype=np.uint32)
+    return cell_wide, cell_narrow
+
+
+def match_nodes(
+    ref_coords: Sequence[npt.ArrayLike], coords: Sequence[npt.ArrayLike]
+) -> npt.NDArray[np.intp] | None:
+    """Find how the nodes of a zone are ordered relative to a reference zone.
+
+    The same grid can be stored with its nodes in another order, for example by SZPLT
+    in large zones, or by another program that wrote the same mesh. Nodes are matched
+    when all of their coordinates are exactly equal, so the coordinates must have the
+    same values, not just the same locations to a tolerance, and must be unique.
+
+    Args:
+        ref_coords: One array per coordinate (``x``, ``y``, ``z``) of the reference
+            zone.
+        coords: The same coordinates of the zone to match.
+
+    Returns:
+        Array ``order`` where ``order[i]`` is the index in *coords* of the node that is
+        node ``i`` of the reference, so ``coords[k][order]`` equals ``ref_coords[k]``
+        and ``values[order]`` lists a nodal variable of the zone in the reference
+        order. ``np.argsort(order)`` is the inverse, giving the reference index of each
+        node of the zone. ``None`` if the zones do not have the same nodes, or if
+        coordinates repeat, which leaves the match ambiguous.
+
+    Raises:
+        ValueError: If a coordinate array is not one-dimensional or the coordinates of
+            a zone have different lengths.
+    """
+    ref = [np.asarray(c) for c in ref_coords]
+    got = [np.asarray(c) for c in coords]
+    for arrays in (ref, got):
+        if not arrays or any(c.ndim != 1 or len(c) != len(arrays[0]) for c in arrays):
+            raise ValueError("coordinates must be 1-D arrays of the same length.")
+    if len(ref) != len(got) or len(ref[0]) != len(got[0]):
+        return None
+    # lexsort treats the last key as the primary one, which does not matter here
+    ref_sort = np.lexsort(ref)
+    got_sort = np.lexsort(got)
+    repeated = np.ones(max(len(ref_sort) - 1, 0), dtype=bool)
+    for r, g in zip(ref, got, strict=True):
+        r, g = r[ref_sort], g[got_sort]
+        if not np.array_equal(r, g):
+            return None
+        repeated &= r[1:] == r[:-1]
+    if repeated.any():
+        return None
+    order = np.empty(len(ref_sort), dtype=np.intp)
+    order[ref_sort] = got_sort
+    return order
+
+
+def match_cells(
+    ref_node_maps: Sequence[npt.ArrayLike],
+    node_maps: Sequence[npt.ArrayLike],
+    node_order: npt.ArrayLike | None = None,
+) -> npt.NDArray[np.intp] | None:
+    """Find how the cells of a zone are ordered relative to a reference zone.
+
+    A cell is identified by its set of nodes, so cells match whatever the order of the
+    nodes within them. Compare the node maps in the reference order afterwards when the
+    order within a cell matters. Each cell is hashed by summing the per-node hash that
+    :func:`cell_face_neighbors` uses to match faces, and the cells are paired by sorting
+    the hashes, so the cost grows as ``num_cells * log(num_cells)``. A pair is accepted
+    only when a second, 32-bit hash agrees too.
+
+    Args:
+        ref_node_maps: The node map of each section of the reference zone, each with
+            shape ``(num_cells, nodes_per_cell)`` and 0-based. Pass ``[node_map]`` for a
+            classic zone.
+        node_maps: The node map of each section of the zone to match, in the same
+            layout.
+        node_order: Order of the nodes as returned by :func:`match_nodes`. Leave out if
+            both zones number their nodes alike.
+
+    Returns:
+        Array ``order`` where ``order[i]`` is the index in the zone of the cell that is
+        cell ``i`` of the reference, counting cells through the sections, so
+        ``values[order]`` lists a cell-centered variable of the zone in the reference
+        order. ``None`` if the zones do not have the same sections or the same cells,
+        or if a section of the reference holds cells with identical nodes, which leaves
+        the match ambiguous.
+
+    Raises:
+        ValueError: If a node map is not two-dimensional or integer, holds a negative
+            index, or holds an index beyond the nodes of the zone (the length of
+            *node_order*, when given).
+    """
+    ref_maps = [_as_cell_nodes(m) for m in ref_node_maps]
+    maps = [_as_cell_nodes(m) for m in node_maps]
+    if len(ref_maps) != len(maps) or any(
+        r.shape != m.shape for r, m in zip(ref_maps, maps, strict=True)
+    ):
+        return None
+    if node_order is None:
+        num_nodes = 1 + max(
+            (int(np.max(m)) for m in (*ref_maps, *maps) if m.size), default=0
+        )
+        renumber = None
+    else:
+        node_order = np.asarray(node_order)
+        num_nodes = len(node_order)
+        renumber = np.empty(num_nodes, dtype=np.intp)
+        renumber[node_order] = np.arange(num_nodes, dtype=np.intp)
+    for m in (*ref_maps, *maps):
+        if m.size and int(np.max(m)) >= num_nodes:
+            raise ValueError("node maps hold indices beyond the nodes of the zone.")
+    wide, narrow = _node_hashes(num_nodes)
+
+    orders = []
+    offset = 0
+    for ref_map, node_map in zip(ref_maps, maps, strict=True):
+        ref_wide, ref_narrow = _hash_cells(ref_map, wide, narrow)
+        got_wide, got_narrow = _hash_cells(node_map, wide, narrow, renumber)
+        ref_sort = np.argsort(ref_wide)
+        got_sort = np.argsort(got_wide)
+        ref_wide, got_wide = ref_wide[ref_sort], got_wide[got_sort]
+        if (ref_wide[1:] == ref_wide[:-1]).any() or not np.array_equal(
+            ref_wide, got_wide
+        ):
+            return None
+        if not np.array_equal(ref_narrow[ref_sort], got_narrow[got_sort]):
+            return None
+        cells = np.empty(len(ref_sort), dtype=np.intp)
+        cells[ref_sort] = got_sort
+        orders.append(cells + offset)
+        offset += len(cells)
+    return np.concatenate(orders) if orders else np.empty(0, dtype=np.intp)
 
 
 # --------------------------------------------------------------------------------------

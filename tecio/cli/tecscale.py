@@ -106,8 +106,8 @@ from typing import Any
 import numpy as np
 
 from .. import (
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotSzlWriter,
@@ -495,9 +495,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             con_sharing=con_sharing,
                             **fe_kw,
                         )
-                    elif isinstance(zone, TecplotMixedZoneReader):
+                    elif isinstance(zone, TecplotFEMixedZoneReader):
                         con_sharing = zone.shared_connectivity
-                        writer.write_mixed_zone(
+                        writer.write_femixed_zone(
                             data=data,
                             cell_shapes=(
                                 None if con_sharing is not None else zone.section_shapes
@@ -511,8 +511,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else:
                         raise NotImplementedError(
                             f"Zone '{zone.title}' is neither an ordered nor a "
-                            "classic FE, mixed or poly zone; scaling is not supported "
-                            "for it."
+                            "classic FE, FEMIXED or poly zone; scaling is not "
+                            "supported for it."
                         )
 
     except Exception as exc:  # noqa: BLE001

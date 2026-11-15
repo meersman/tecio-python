@@ -20,7 +20,7 @@ nodal or cell-centered, is copied unchanged. Zones that share connectivity are r
 together.
 
 A zone that holds several cell shapes, such as tetrahedra with pyramids and prisms, has
-no classic zone type to collapse to. With ``--mixed`` it is written as a ``FEMIXED``
+no classic zone type to collapse to. With ``--femixed`` it is written as a ``FEMIXED``
 zone instead, with one section per shape (see :func:`tecio.split_cells_by_shape`). The
 cells are then grouped by shape, so cell-centered variables are reordered to match.
 ``FEMIXED`` zones need ``.szplt`` output. Every other zone is copied unchanged.
@@ -34,7 +34,7 @@ Poly output cannot be written by this tool and is only an estimate.
 
 .. code:: bash
 
-    tecelretyp [-h] [-z LIST] [--mixed] [--dry-run] [--check]
+    tecelretyp [-h] [-z LIST] [--femixed] [--dry-run] [--check]
                [--drop-face-neighbors] [-o PATH] [-f] PATH
 
 :Positional Arguments:
@@ -47,7 +47,7 @@ Poly output cannot be written by this tool and is only an estimate.
         Other zones are copied unchanged. A group of zones sharing connectivity is only
         retyped if every zone in it is listed. If omitted, all zones are considered.
 
-    ``--mixed``
+    ``--femixed``
         Write zones that hold several cell shapes as ``FEMIXED`` zones. Needs ``.szplt``
         output, which is then the default for the output name. Face-neighbor data is
         discarded, as for any ``.szplt`` output.
@@ -78,7 +78,7 @@ Poly output cannot be written by this tool and is only an estimate.
     A new Tecplot file with the retypable zones rewritten, all other zones unchanged.
     If no zone can be retyped, no file is written. Exit code ``0`` on success and ``1``
     if the input cannot be read, a zone index is out of range, the output exists
-    without ``--force``, ``--mixed`` is given with ``.plt`` or ``.dat`` output, or
+    without ``--force``, ``--femixed`` is given with ``.plt`` or ``.dat`` output, or
     writing fails (``2`` for errors under ``--check``).
 
 Examples:
@@ -96,7 +96,7 @@ Examples:
 
     Also write zones of mixed cell shapes as ``FEMIXED``::
 
-        $ tecelretyp --mixed flow.plt -o flow_compact.szplt
+        $ tecelretyp --femixed flow.plt -o flow_compact.szplt
 
     Fail a pipeline if a file still holds upcast cells::
 
@@ -131,8 +131,8 @@ import numpy.typing as npt
 
 from .. import (
     FeCellShape,
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
-    TecplotMixedZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
     TecplotReader,
@@ -198,7 +198,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             # -|-------------------|---------------------------------------------|
             "Rewrite FEBRICK zones that hold only tetrahedra as FETETRAHEDRON and\n"
             "FEQUADRILATERAL zones that hold only triangles as FETRIANGLE. With\n"
-            "--mixed, zones of several cell shapes become FEMIXED zones."
+            "--femixed, zones of several cell shapes become FEMIXED zones."
         ),
         epilog=(
             "Example usage:\n"
@@ -207,7 +207,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "  Retype and write a new file\n"
             "    $ tecelretyp <file> -o compact.plt\n"
             "  Also write mixed cell shapes as FEMIXED zones\n"
-            "    $ tecelretyp --mixed <file> -o compact.szplt\n"
+            "    $ tecelretyp --femixed <file> -o compact.szplt\n"
             "  Retype only zones 0 and 2\n"
             "    $ tecelretyp -z 0,2 <file>\n"
             "  Exit with status 1 if anything could be retyped\n"
@@ -230,7 +230,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--mixed",
+        "--femixed",
         action="store_true",
         default=False,
         help=(
@@ -299,10 +299,10 @@ class _Group:
     counts: dict[FeCellShape | None, int]  # empty if there is no connectivity
     face_neighbors: bool
     target: ZoneType | None = None  # classic type that every cell collapses to
-    mixed: dict[FeCellShape, int] | None = None  # shapes, if FEMIXED would be smaller
+    femixed: dict[FeCellShape, int] | None = None  # shapes, if FEMIXED would be smaller
     current: int = 0  # bytes of the node map as it is
     retyped: int = 0  # bytes as ``target``
-    as_mixed: int = 0  # bytes as FEMIXED
+    as_femixed: int = 0  # bytes as FEMIXED
     as_poly: int = 0  # estimated bytes of the faces of a poly zone
 
 
@@ -442,8 +442,8 @@ def _build_group(reader: TecplotReader, root: int, members: list[int]) -> _Group
         group.target = target
         group.retyped = num_cells * CELL_SHAPE_NUM_NODES[small] * _BYTES_PER_INDEX
     elif None not in group.counts and set(group.counts) != {full}:
-        group.mixed = known
-        group.as_mixed = _node_map_bytes(known)
+        group.femixed = known
+        group.as_femixed = _node_map_bytes(known)
     return group
 
 
@@ -465,7 +465,7 @@ def _analyze(reader: TecplotReader) -> _Analysis:
                 analysis.cell_links.append((i, source))
         if isinstance(zone, TecplotFEZoneReader):
             members.setdefault(_root_zone(reader, i), []).append(i)
-        elif isinstance(zone, TecplotMixedZoneReader):
+        elif isinstance(zone, TecplotFEMixedZoneReader):
             if zone.shared_connectivity is None:
                 counts: dict[FeCellShape, int] = {}
                 for shape, n in zip(
@@ -501,8 +501,8 @@ class _Plan:
     num_cells: int | None
     root: int = -1  # zone that owns the node map
     target: ZoneType | None = None
-    to_mixed: bool = False
-    mixed_counts: dict[FeCellShape, int] | None = None  # set on the owner only
+    to_femixed: bool = False
+    femixed_counts: dict[FeCellShape, int] | None = None  # set on the owner only
     note: str = ""
     saved_entries: int = 0
 
@@ -522,7 +522,7 @@ def _make_plan(
     selected: set[int],
     *,
     protect_face_neighbors: bool,
-    mixed: bool,
+    femixed: bool,
 ) -> list[_Plan]:
     """Decide which zones to retype.
 
@@ -534,7 +534,7 @@ def _make_plan(
         selected: Indices of the zones to consider.
         protect_face_neighbors: True if retyping would silently discard face-neighbor
             data, so zones that have it must be left alone.
-        mixed: True to write zones of several cell shapes as ``FEMIXED``.
+        femixed: True to write zones of several cell shapes as ``FEMIXED``.
 
     Returns:
         One plan per zone, in file order.
@@ -559,30 +559,30 @@ def _make_plan(
                 plans[i].note = "no connectivity"
             continue
         # FEMIXED needs an SZL file, which has nowhere to keep face-neighbor data.
-        wanted_mixed = group.target is None and group.mixed is not None
+        wanted_femixed = group.target is None and group.femixed is not None
         blocked = _blocking_reason(
             group,
             selected,
-            protect_face_neighbors=protect_face_neighbors and not wanted_mixed,
+            protect_face_neighbors=protect_face_neighbors and not wanted_femixed,
         )
         note = blocked or ""
         target = group.target if blocked is None else None
-        to_mixed = wanted_mixed and mixed and blocked is None
-        if target is None and not to_mixed and blocked is None:
+        to_femixed = wanted_femixed and femixed and blocked is None
+        if target is None and not to_femixed and blocked is None:
             note = _describe_shapes(group.counts)
-            if wanted_mixed:
-                note += "; could be FEMIXED, see --mixed"
+            if wanted_femixed:
+                note += "; could be FEMIXED, see --femixed"
         for i in group.members:
             plans[i].note = note
             plans[i].target = target
-            plans[i].to_mixed = to_mixed
+            plans[i].to_femixed = to_femixed
         before = group.current // _BYTES_PER_INDEX
         if target is not None:
             plans[root].saved_entries = before - group.retyped // _BYTES_PER_INDEX
-        elif to_mixed:
-            plans[root].mixed_counts = group.mixed
-            plans[root].saved_entries = before - group.as_mixed // _BYTES_PER_INDEX
-        if target is not None or to_mixed:
+        elif to_femixed:
+            plans[root].femixed_counts = group.femixed
+            plans[root].saved_entries = before - group.as_femixed // _BYTES_PER_INDEX
+        if target is not None or to_femixed:
             for i in group.members:
                 if i != root:
                     plans[i].note = f"shares connectivity with zone {root}"
@@ -606,7 +606,7 @@ def _keep_cell_values_consistent(
     changed = True
     while changed:
         changed = False
-        owner = {p.index: p.root for p in plans if p.to_mixed}
+        owner = {p.index: p.root for p in plans if p.to_femixed}
         for zone, source in links:
             a, b = owner.get(zone), owner.get(source)
             if a == b:
@@ -615,9 +615,9 @@ def _keep_cell_values_consistent(
                 if root is None:
                     continue
                 for plan in plans:
-                    if plan.root == root and plan.to_mixed:
-                        plan.to_mixed = False
-                        plan.mixed_counts = None
+                    if plan.root == root and plan.to_femixed:
+                        plan.to_femixed = False
+                        plan.femixed_counts = None
                         plan.saved_entries = 0
                         plan.note = f"shares a cell-centered variable with zone {other}"
             changed = True
@@ -658,11 +658,11 @@ def _print_plan(plans: list[_Plan]) -> None:
         title = plan.title[:_TITLE_WIDTH]
         zone_type = plan.zone_type.name if plan.zone_type is not None else "?"
         cells = "" if plan.num_cells is None else str(plan.num_cells)
-        new_type = "FEMIXED" if plan.to_mixed else plan.target and plan.target.name
+        new_type = "FEMIXED" if plan.to_femixed else plan.target and plan.target.name
         if new_type:
             result = f"-> {new_type}"
-            if plan.mixed_counts is not None:
-                result += f": {_shape_list(plan.mixed_counts)}"
+            if plan.femixed_counts is not None:
+                result += f": {_shape_list(plan.femixed_counts)}"
             if plan.note:
                 result += f" ({plan.note})"
         else:
@@ -670,10 +670,10 @@ def _print_plan(plans: list[_Plan]) -> None:
         print(
             f"{plan.index:>5}  {title:<{_TITLE_WIDTH}}  {zone_type:<16}  {cells:>10}  {result}"
         )
-    retyped = [p for p in plans if p.target is not None or p.to_mixed]
+    retyped = [p for p in plans if p.target is not None or p.to_femixed]
     saved = sum(p.saved_entries for p in plans)
-    as_mixed = sum(p.to_mixed for p in plans)
-    detail = f" ({as_mixed} as FEMIXED)" if as_mixed else ""
+    as_femixed = sum(p.to_femixed for p in plans)
+    detail = f" ({as_femixed} as FEMIXED)" if as_femixed else ""
     print(
         f"{len(retyped)} of {len(plans)} zones can be retyped{detail}, removing "
         f"{saved} node map entries (about {saved * _BYTES_PER_INDEX / 2**20:.1f} MiB "
@@ -712,8 +712,8 @@ def _after_bytes(analysis: _Analysis, plans: list[_Plan]) -> int:
         group = analysis.groups.get(root)
         if group is not None and plans[root].target is not None:
             total += group.retyped
-        elif group is not None and plans[root].to_mixed:
-            total += group.as_mixed
+        elif group is not None and plans[root].to_femixed:
+            total += group.as_femixed
         else:
             total += current
     return total
@@ -740,15 +740,15 @@ def _suggestions(
             continue
         best = saved
         retyped = sum(p.target is not None for p in plans)
-        mixed = sum(p.to_mixed for p in plans)
+        femixed = sum(p.to_femixed for p in plans)
         parts = []
         if retyped:
             parts.append(f"retypes {retyped} {'zone' if retyped == 1 else 'zones'}")
-        if mixed:
+        if femixed:
             parts.append(
-                f"writes {mixed} {'zone' if mixed == 1 else 'zones'} as FEMIXED"
+                f"writes {femixed} {'zone' if femixed == 1 else 'zones'} as FEMIXED"
             )
-        acted = {p.root for p in plans if p.target is not None or p.to_mixed}
+        acted = {p.root for p in plans if p.target is not None or p.to_femixed}
         if any(analysis.groups[r].face_neighbors for r in acted):
             parts.append("discards face-neighbor data")
         found.append((flags, saved, ", ".join(parts)))
@@ -816,7 +816,7 @@ def _print_estimates(
 
 
 @dataclass
-class _MixedLayout:
+class _FEMixedLayout:
     """The sections a group of zones is written as, shared by the whole group."""
 
     shapes: list[FeCellShape]
@@ -824,7 +824,7 @@ class _MixedLayout:
     order: npt.NDArray[np.intp]  # input cell of each cell of the new zone
 
 
-def _mixed_layout(owner: TecplotFEZoneReader) -> _MixedLayout:
+def _femixed_layout(owner: TecplotFEZoneReader) -> _FEMixedLayout:
     """Split the cells of *owner* by shape.
 
     Returns:
@@ -833,7 +833,7 @@ def _mixed_layout(owner: TecplotFEZoneReader) -> _MixedLayout:
     node_map = owner.node_map
     assert node_map is not None
     parts = split_cells_by_shape(node_map, owner.zone_type)
-    return _MixedLayout(
+    return _FEMixedLayout(
         list(parts),
         [nodes for _, nodes in parts.values()],
         np.concatenate([cells for cells, _ in parts.values()]),
@@ -850,20 +850,20 @@ def _write_zones(reader: TecplotReader, writer: Any, plans: list[_Plan]) -> None
             other zones keep it unless the writer cannot store it.
 
     Raises:
-        NotImplementedError: If a zone is not an ordered, classic FE, mixed or poly
+        NotImplementedError: If a zone is not an ordered, classic FE, FEMIXED or poly
             zone.
     """
     cell_centered = ValueLocation.CELL_CENTERED
-    layouts: dict[int, _MixedLayout] = {}
-    last_member = {p.root: p.index for p in plans if p.to_mixed}
+    layouts: dict[int, _FEMixedLayout] = {}
+    last_member = {p.root: p.index for p in plans if p.to_femixed}
     for plan, zone in zip(plans, reader.zones, strict=True):
         layout = None
-        if plan.to_mixed:
+        if plan.to_femixed:
             layout = layouts.get(plan.root)
             if layout is None:
                 owner = reader.zones[plan.root]
                 assert isinstance(owner, TecplotFEZoneReader)
-                layout = layouts[plan.root] = _mixed_layout(owner)
+                layout = layouts[plan.root] = _femixed_layout(owner)
         data: list[np.ndarray] = []
         value_locations: list[Any] = []
         passive_vars: set[str] = set()
@@ -907,7 +907,7 @@ def _write_zones(reader: TecplotReader, writer: Any, plans: list[_Plan]) -> None
         elif isinstance(zone, TecplotFEZoneReader):
             con_sharing = zone.shared_connectivity
             if layout is not None:
-                writer.write_mixed_zone(
+                writer.write_femixed_zone(
                     data=data,
                     cell_shapes=None if con_sharing is not None else layout.shapes,
                     node_maps=None if con_sharing is not None else layout.node_maps,
@@ -935,9 +935,9 @@ def _write_zones(reader: TecplotReader, writer: Any, plans: list[_Plan]) -> None
                     con_sharing=con_sharing,
                     **common_kw,
                 )
-        elif isinstance(zone, TecplotMixedZoneReader):
+        elif isinstance(zone, TecplotFEMixedZoneReader):
             con_sharing = zone.shared_connectivity
-            writer.write_mixed_zone(
+            writer.write_femixed_zone(
                 data=data,
                 cell_shapes=None if con_sharing is not None else zone.section_shapes,
                 node_maps=None if con_sharing is not None else zone.node_maps,
@@ -946,7 +946,7 @@ def _write_zones(reader: TecplotReader, writer: Any, plans: list[_Plan]) -> None
             )
         else:
             raise NotImplementedError(
-                f"Zone '{zone.title}' is not an ordered, FE, mixed or poly zone; it "
+                f"Zone '{zone.title}' is not an ordered, FE, FEMIXED or poly zone; it "
                 "cannot be copied."
             )
 
@@ -975,12 +975,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         dst = Path(args.output)
     else:
         dst = src.with_stem(src.stem + "_retyped")
-        if args.mixed:
+        if args.femixed:
             dst = dst.with_suffix(".szplt")
     szplt_output = dst.suffix.lower() == ".szplt"
-    if args.mixed and not szplt_output:
+    if args.femixed and not szplt_output:
         print(
-            "Error: --mixed needs .szplt output, FEMIXED zones are not supported by "
+            "Error: --femixed needs .szplt output, FEMIXED zones are not supported by "
             f"{dst.suffix or 'this'} files.",
             file=sys.stderr,
         )
@@ -1017,10 +1017,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 analysis,
                 selected,
                 protect_face_neighbors=protect_face_neighbors,
-                mixed=args.mixed,
+                femixed=args.femixed,
             )
             _print_plan(plans)
-            retypable = any(p.target is not None or p.to_mixed for p in plans)
+            retypable = any(p.target is not None or p.to_femixed for p in plans)
 
             if dry:
                 command = ["tecelretyp"]
@@ -1035,7 +1035,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             analysis,
                             selected,
                             protect_face_neighbors=not szplt_output,
-                            mixed=False,
+                            femixed=False,
                         ),
                     ),
                     (
@@ -1045,17 +1045,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                             analysis,
                             selected,
                             protect_face_neighbors=False,
-                            mixed=False,
+                            femixed=False,
                         ),
                     ),
                     (
-                        ["--mixed"],
+                        ["--femixed"],
                         _make_plan(
                             reader,
                             analysis,
                             selected,
                             protect_face_neighbors=False,
-                            mixed=True,
+                            femixed=True,
                         ),
                     ),
                 ]

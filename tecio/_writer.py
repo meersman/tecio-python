@@ -3,7 +3,7 @@
 Every format's writer (SZL, PLT, DAT) exposes the same lifecycle: construct with a path
 and optional variable list (eager or lazy open), buffer auxiliary data with
 :meth:`~TecplotWriter.add_auxdataset_dict`/ :meth:`~TecplotWriter.add_auxvar_dict`,
-write zones with ``write_ordered_zone``/ ``write_fe_zone``/ ``write_mixed_zone``/
+write zones with ``write_ordered_zone``/ ``write_fe_zone``/ ``write_femixed_zone``/
 ``write_poly_zone``, and
 close (directly or via context manager). This module defines the parts of that
 lifecycle that are identical across formats once, so the three writers can no longer
@@ -196,7 +196,7 @@ def validate_face_neighbors(
     """
     faces_per_cell = _FACES_PER_ELEM.get(zone_type)
     if faces_per_cell is None:
-        return  # poly/mixed zones: no fixed face count, not this function's job
+        return  # poly/FEMIXED zones: no fixed face count, not this function's job
 
     def check_cell(cz: int, pos: int) -> None:
         if not 0 <= cz < num_cells:
@@ -1040,8 +1040,8 @@ def prepare_fe_zone(
 
 
 @dataclass
-class PreparedMixedZone:
-    """Validated, normalized inputs for writing one mixed (FEMIXED) zone.
+class PreparedFEMixedZone:
+    """Validated, normalized inputs for writing one FEMIXED zone.
 
     Everything a writer needs to proceed straight to its zone-creation call, already
     validated and shape-consistent.
@@ -1104,7 +1104,7 @@ def _check_section_node_map(
     return arr
 
 
-def prepare_mixed_zone(
+def prepare_femixed_zone(
     arrays: Sequence[npt.NDArray],
     variable_types: Sequence[DataType],
     *,
@@ -1116,8 +1116,8 @@ def prepare_mixed_zone(
     con_sharing: int | None,
     dataset_variables: Sequence[str],
     meta: WriterMeta,
-) -> PreparedMixedZone | None:
-    """Validate and normalize inputs for writing a mixed (FEMIXED) zone.
+) -> PreparedFEMixedZone | None:
+    """Validate and normalize inputs for writing a FEMIXED zone.
 
     Shared across formats. Derives the section layout and node/cell counts from
     *cell_shapes* and *node_maps* (or the *con_sharing* source zone), then resolves and
@@ -1140,7 +1140,7 @@ def prepare_mixed_zone(
         meta: The writer's own zone metadata, for resolving shared source zones.
 
     Returns:
-        A :class:`PreparedMixedZone`, or ``None`` after an :class:`EmptyZoneWarning`
+        A :class:`PreparedFEMixedZone`, or ``None`` after an :class:`EmptyZoneWarning`
         when every dataset variable is passive or shared.
 
     Raises:
@@ -1150,7 +1150,7 @@ def prepare_mixed_zone(
             or malformed section arrays, sections of different spatial dimension, fewer
             dataset variables than the cell dimension (the library needs one coordinate
             variable per dimension and crashes without them), a zone with no cells,
-            con_sharing referencing a zone that is not a written mixed zone, or any
+            con_sharing referencing a zone that is not a written FEMIXED zone, or any
             variable validation failure.
         KeyError: A *passive_vars*/*var_sharing* name doesn't match any dataset
             variable.
@@ -1172,7 +1172,7 @@ def prepare_mixed_zone(
         ):
             raise ValueError(
                 f"con_sharing={con_sharing} references a zone that has not been "
-                "written yet, or is not a mixed finite-element zone."
+                "written yet, or is not a FEMIXED zone."
             )
         shapes = src_zone.section_shapes
         counts = src_zone.section_num_elements
@@ -1190,20 +1190,22 @@ def prepare_mixed_zone(
             )
         shapes = tuple(_as_cell_shape(shape) for shape in cell_shapes)
         if not 1 <= len(shapes) <= 16:
-            raise ValueError(f"A mixed zone needs 1 to 16 sections, got {len(shapes)}.")
+            raise ValueError(
+                f"A FEMIXED zone needs 1 to 16 sections, got {len(shapes)}."
+            )
         section_maps = [
             _check_section_node_map(nm, shape, i)
             for i, (nm, shape) in enumerate(zip(node_maps, shapes, strict=True))
         ]
         counts = tuple(int(nm.shape[0]) for nm in section_maps)
         if sum(counts) == 0:
-            raise ValueError("A mixed zone needs at least one cell.")
+            raise ValueError("A FEMIXED zone needs at least one cell.")
         num_nodes = max(int(nm.max()) for nm in section_maps if nm.size) + 1
 
     dimensions = {CELL_SHAPE_DIMENSION[shape] for shape in shapes}
     if len(dimensions) > 1:
         raise ValueError(
-            "All sections of a mixed zone must have the same spatial dimension, got "
+            "All sections of a FEMIXED zone must have the same spatial dimension, got "
             + ", ".join(shape.name for shape in shapes)
             + "."
         )
@@ -1229,7 +1231,7 @@ def prepare_mixed_zone(
     )
     if zone_vars is None:
         return None
-    return PreparedMixedZone(
+    return PreparedFEMixedZone(
         value_locations=list(zone_vars.value_locations),
         passive_vars=zone_vars.passive_flags,
         var_sharing=list(zone_vars.share_idx),
@@ -1988,7 +1990,7 @@ class TecplotWriter(ABC):
         aux: dict[str, Any] | None = None,
         datapacking: DataPacking | str = DataPacking.BLOCK,
     ) -> None:
-        """Write a complete IJK-ordered zone. See the concrete subclass for details."""
+        """Write a complete structured zone."""
 
     @abstractmethod
     def write_fe_zone(
@@ -2012,7 +2014,7 @@ class TecplotWriter(ABC):
         """Write a complete finite-element zone."""
 
     @abstractmethod
-    def write_mixed_zone(
+    def write_femixed_zone(
         self,
         data: Sequence[npt.ArrayLike],
         cell_shapes: Sequence[FeCellShape | int | str] | None = None,
@@ -2029,7 +2031,7 @@ class TecplotWriter(ABC):
         aux: dict[str, Any] | None = None,
         datapacking: DataPacking | str = DataPacking.BLOCK,
     ) -> None:
-        """Write a complete FEMIXED zone, see the concrete subclass for details."""
+        """Write a complete FEMIXED zone."""
 
     @abstractmethod
     def write_poly_zone(
