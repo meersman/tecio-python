@@ -174,7 +174,7 @@ import glob
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -676,7 +676,10 @@ def _match_grid(
             or any(abs(r - g) > tol for r, g in zip(ref_bounds, bounds, strict=True))
         ):
             return None
-    ref_arrays = [source.zone.variables[i].values for i in source.locals]
+    # Registered sources only hold grid variables that have values
+    ref_arrays = [
+        cast(npt.NDArray[Any], source.zone.variables[i].values) for i in source.locals
+    ]
     ref_map = got_map = None
     reorderable = False
     if isinstance(zone, TecplotFEZoneReader) and isinstance(
@@ -692,7 +695,10 @@ def _match_grid(
         np.allclose(g, r, rtol=0.0, atol=tol)
         for r, g, tol in zip(ref_arrays, grid.arrays, tolerances, strict=True)
     )
-    if same_nodes and (ref_map is None or np.array_equal(ref_map, got_map)):
+    same_cells = (ref_map is None and got_map is None) or (
+        ref_map is not None and got_map is not None and np.array_equal(ref_map, got_map)
+    )
+    if same_nodes and same_cells:
         return _GridMatch(None, None)
     if not reorderable or ref_map is None or got_map is None:
         return None
