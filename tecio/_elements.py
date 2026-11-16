@@ -14,12 +14,21 @@ collapsed, which repeats node ``i`` at positions ``i`` and ``i + 4``. When a cel
 collapsed, the handedness of the original cell is kept: the new node order is the order
 of first appearance, with the last two nodes swapped where a collapse would otherwise
 mirror the cell (this affects 18 of the 102 ways a brick can collapse to a tetrahedron).
+A brick also collapses to a pyramid in 54 ways and to a prism in 12, and a cell whose
+nodes have the right face counts but not the right number of edges is not recognized.
 
 Node indices are never changed, so nodal and cell-centered variables stay valid for a
-collapsed zone. Only the node map changes.
+collapsed zone. Only the node map changes. :func:`split_cells_by_shape` goes further and
+separates the cells by shape for a ``FEMIXED`` zone. A pyramid lists the four
+nodes of its base and then its apex, a prism lists one triangle and then the node above
+each of its nodes, and both keep the handedness of the brick they came from.
 
 :func:`cell_face_neighbors` finds, for every face of every cell, the cell on the other
 side from the node map alone.
+
+:func:`match_nodes` and :func:`match_cells` find how the nodes and cells of a zone are
+ordered relative to a reference zone with the same grid, such as the same mesh read from
+SZPLT, which may reorder large zones, and from PLT or DAT.
 
 :func:`faces_by_element` and :func:`nodes_by_element` list the faces and the nodes of
 every element from the left and right element of each face for polygon or polyhedral
@@ -30,7 +39,7 @@ from __future__ import annotations
 
 import functools
 import itertools
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fractions import Fraction
 from typing import NamedTuple
 
@@ -38,21 +47,47 @@ import numpy as np
 import numpy.typing as npt
 
 from ._constants import FeCellShape, ZoneType
-from ._hashing import lowbias32, splitmix64
 
 __all__ = [
     "UNKNOWN_SHAPE",
+    "CELL_SHAPE_NUM_NODES",
+    "CELL_SHAPE_DIMENSION",
     "cell_face_neighbors",
     "classify_cells",
     "collapse_cells",
     "collapsed_zone_type",
     "degenerate_edges",
     "expand_cells",
+    "match_cells",
+    "match_nodes",
     "shape_counts",
+    "split_cells_by_shape",
 ]
 
 #: Value returned by :func:`classify_cells` for a cell that is not a recognized shape.
 UNKNOWN_SHAPE = -1
+
+#: Nodes per cell for each linear (grid order 1) cell shape.
+CELL_SHAPE_NUM_NODES: dict[FeCellShape, int] = {
+    FeCellShape.BAR: 2,
+    FeCellShape.TRIANGLE: 3,
+    FeCellShape.QUADRILATERAL: 4,
+    FeCellShape.TETRAHEDRON: 4,
+    FeCellShape.HEXAHEDRON: 8,
+    FeCellShape.PYRAMID: 5,
+    FeCellShape.PRISM: 6,
+}
+
+#: The spatial dimension of each shape.
+CELL_SHAPE_DIMENSION: dict[FeCellShape, int] = {
+    FeCellShape.BAR: 1,
+    FeCellShape.TRIANGLE: 2,
+    FeCellShape.QUADRILATERAL: 2,
+    FeCellShape.TETRAHEDRON: 3,
+    FeCellShape.HEXAHEDRON: 3,
+    FeCellShape.PYRAMID: 3,
+    FeCellShape.PRISM: 3,
+}
 
 # Cells processed at a time, bounds the size of temporary arrays.
 _CHUNK_CELLS = 2**18
@@ -115,6 +150,13 @@ _BRICK_FACES = (
     (3, 0, 4, 7),
 )
 
+# Corners of a pyramid in FEMIXED node order (the pyramid base runs counterclockwise
+# seen from the apex side).
+_PYRAMID_CORNERS = ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1))
+
+# Corners of a prism in FEMIXED node order (node 3 of the prism is above node 0).
+_PRISM_CORNERS = ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (0, 1, 1))
+
 # Nodes of each face as positions in the cell's node list.
 _FACE_NODES: dict[ZoneType, tuple[tuple[int, ...], ...]] = {
     ZoneType.FETRIANGLE: ((0, 1), (1, 2), (2, 0)),
@@ -144,9 +186,9 @@ class _Table(NamedTuple):
     orders: npt.NDArray[np.int8]  # node positions of the collapsed cell, -1 if unused
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Pattern tables
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 
 
 def _label_strings(n: int) -> Iterator[tuple[int, ...]]:
@@ -207,12 +249,23 @@ def _brick_shape(labels: tuple[int, ...]) -> FeCellShape | None:
     num_nodes = len(set(labels))
     triangles = sum(len(p) == 3 for p in polygons)
     quads = sum(len(p) == 4 for p in polygons)
-    return {
+    shape = {
         (4, 4, 0): FeCellShape.TETRAHEDRON,
         (5, 4, 1): FeCellShape.PYRAMID,
         (6, 2, 3): FeCellShape.PRISM,
         (8, 0, 6): FeCellShape.HEXAHEDRON,
     }.get((num_nodes, triangles, quads))
+    if shape is None:
+        return None
+    # Matching face counts is not enough (a sliver folded onto itself has them too). A
+    # real solid has the edges per node of its shape (a pyramid apex has four).
+    degree: dict[int, int] = {}
+    for edge in edge_uses:
+        for node in edge:
+            degree[node] = degree.get(node, 0) + 1
+    apex = [4] if shape == FeCellShape.PYRAMID else []
+    expected = sorted([3] * (num_nodes - len(apex)) + apex)
+    return shape if sorted(degree.values()) == expected else None
 
 
 def _quad_shape(labels: tuple[int, ...]) -> FeCellShape | None:
@@ -228,7 +281,7 @@ def _quad_shape(labels: tuple[int, ...]) -> FeCellShape | None:
     return FeCellShape.TRIANGLE if len(polygons[0]) == 3 else FeCellShape.QUADRILATERAL
 
 
-def _simpson_volume(corners: list[tuple[int, ...]]) -> Fraction:
+def _simpson_volume(corners: Sequence[tuple[int, ...]]) -> Fraction:
     """Return the exact volume of a trilinear hexahedron.
 
     The Jacobian determinant is quadratic in each coordinate, so a three-point Simpson
@@ -244,7 +297,7 @@ def _simpson_volume(corners: list[tuple[int, ...]]) -> Fraction:
     for (a, wa), (b, wb), (c, wc) in itertools.product(
         zip(points, weights, strict=True), repeat=3
     ):
-        jac = [[Fraction(0)] * 3 for _ in range(3)]
+        J = [[Fraction(0)] * 3 for _ in range(3)]  # noqa N806
         for node, (sx, sy, sz) in enumerate(signs):
             slopes = (
                 sx * (1 + sy * b) * (1 + sz * c),
@@ -253,11 +306,11 @@ def _simpson_volume(corners: list[tuple[int, ...]]) -> Fraction:
             )
             for i in range(3):
                 for k in range(3):
-                    jac[i][k] += Fraction(slopes[i], 8) * corners[node][k]
+                    J[i][k] += Fraction(slopes[i], 8) * corners[node][k]
         det = (
-            jac[0][0] * (jac[1][1] * jac[2][2] - jac[1][2] * jac[2][1])
-            - jac[0][1] * (jac[1][0] * jac[2][2] - jac[1][2] * jac[2][0])
-            + jac[0][2] * (jac[1][0] * jac[2][1] - jac[1][1] * jac[2][0])
+            J[0][0] * (J[1][1] * J[2][2] - J[1][2] * J[2][1])
+            - J[0][1] * (J[1][0] * J[2][2] - J[1][2] * J[2][0])
+            + J[0][2] * (J[1][0] * J[2][1] - J[1][1] * J[2][0])
         )
         total += wa * wb * wc * det
     return total
@@ -285,6 +338,54 @@ def _tet_order(labels: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(order)
 
 
+def _pyramid_order(labels: tuple[int, ...]) -> tuple[int, ...]:
+    """Return the brick positions that give a pyramid of the brick's handedness.
+
+    The nodes are the base quadrilateral in ring order and then the apex. If a pyramid
+    put on those nodes has the opposite sign to the collapsed brick, two base nodes
+    swap.
+
+    Returns:
+        Five brick positions, in the order of the new node map.
+    """
+    polygons = _polygons(labels, _BRICK_FACES) or []
+    base = next(p for p in polygons if len(p) == 4)
+    apex = next(label for label in set(labels) if label not in base)
+    order = [*base, apex]
+    corners = [_PYRAMID_CORNERS[order.index(label)] for label in labels]
+    if _simpson_volume(corners) < 0:
+        order[1], order[3] = order[3], order[1]
+    return tuple(labels.index(label) for label in order)
+
+
+def _prism_order(labels: tuple[int, ...]) -> tuple[int, ...]:
+    """Return the brick positions that give a prism of the brick's handedness.
+
+    The nodes are one triangle in ring order and then the node joined to each of them
+    by an edge of the other triangle. If a prism put on those nodes has the opposite
+    sign to the collapsed brick, the last two nodes of each triangle swap.
+
+    Returns:
+        Six brick positions, in the order of the new node map.
+    """
+    polygons = _polygons(labels, _BRICK_FACES) or []
+    bottom, top = (p for p in polygons if len(p) == 3)
+    above: dict[int, int] = {}
+    for quad in (p for p in polygons if len(p) == 4):
+        for i in range(4):
+            a, b = quad[i - 1], quad[i]
+            if a in bottom and b in top:
+                above[a] = b
+            elif b in bottom and a in top:
+                above[b] = a
+    order = [*bottom, *(above[label] for label in bottom)]
+    corners = [_PRISM_CORNERS[order.index(label)] for label in labels]
+    if _simpson_volume(corners) < 0:
+        order[1], order[2] = order[2], order[1]
+        order[4], order[5] = order[5], order[4]
+    return tuple(labels.index(label) for label in order)
+
+
 @functools.cache
 def _table(zone_type: ZoneType) -> _Table:
     """Build the collapse patterns of ``FEBRICK`` or ``FEQUADRILATERAL``.
@@ -294,7 +395,6 @@ def _table(zone_type: ZoneType) -> _Table:
     """
     n = _NODES_PER_CELL[zone_type]
     pairs = tuple(itertools.combinations(range(n), 2))
-    width = 4 if zone_type == ZoneType.FEBRICK else 3
     rows: list[tuple[int, FeCellShape, tuple[int, ...]]] = []
     for labels in _label_strings(n):
         is_brick = zone_type == ZoneType.FEBRICK
@@ -302,14 +402,19 @@ def _table(zone_type: ZoneType) -> _Table:
         if shape is None:
             continue
         mask = sum(1 << k for k, (i, j) in enumerate(pairs) if labels[i] == labels[j])
-        order: tuple[int, ...] = ()
         if shape == FeCellShape.TETRAHEDRON:
             order = _tet_order(labels)
+        elif shape == FeCellShape.PYRAMID:
+            order = _pyramid_order(labels)
+        elif shape == FeCellShape.PRISM:
+            order = _prism_order(labels)
         elif shape == FeCellShape.TRIANGLE:
             order = tuple(_first_positions(labels))
+        else:  # hexahedron or quadrilateral retain all nodes
+            order = tuple(range(n))
         rows.append((mask, shape, order))
     rows.sort(key=lambda row: row[0])
-    orders = np.full((len(rows), width), -1, dtype=np.int8)
+    orders = np.full((len(rows), n), -1, dtype=np.int8)
     for r, (_, _, order) in enumerate(rows):
         orders[r, : len(order)] = order
     return _Table(
@@ -319,9 +424,9 @@ def _table(zone_type: ZoneType) -> _Table:
     )
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Helpers
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 
 
 def _as_node_map(
@@ -389,9 +494,9 @@ def _classify_chunk(
     return shapes, rows
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Public API
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 
 
 def classify_cells(
@@ -535,7 +640,8 @@ def collapse_cells(
         raise ValueError(f"{zone_type.name} cannot be collapsed to {target.name}.")
     shape = _COLLAPSE[zone_type][1]
     table = _table(zone_type)
-    out = np.empty((len(nodes), table.orders.shape[1]), dtype=nodes.dtype)
+    width = CELL_SHAPE_NUM_NODES[shape]
+    out = np.empty((len(nodes), width), dtype=nodes.dtype)
     for lo in range(0, len(nodes), _CHUNK_CELLS):
         chunk = nodes[lo : lo + _CHUNK_CELLS]
         shapes, rows = _classify_chunk(chunk, zone_type)
@@ -545,9 +651,69 @@ def collapse_cells(
                 f"cannot collapse {zone_type.name} to {target.name}: cell "
                 f"{lo + int(wrong[0])} is not a {shape.name.lower()}."
             )
-        positions = table.orders[rows].astype(np.intp)
+        positions = table.orders[rows, :width].astype(np.intp)
         out[lo : lo + len(chunk)] = np.take_along_axis(chunk, positions, axis=1)
     return out
+
+
+def split_cells_by_shape(
+    node_map: npt.ArrayLike, zone_type: ZoneType
+) -> dict[FeCellShape, tuple[npt.NDArray[np.intp], npt.NDArray[np.integer]]]:
+    """Separate the cells of a zone by shape, for a ``FEMIXED`` zone.
+
+    Every cell is reduced to its collapsed shape: ``FEBRICK`` cells give tetrahedra,
+    pyramids, prisms and hexahedra and ``FEQUADRILATERAL`` cells give triangles and
+    quadrilaterals. Repeated nodes are dropped, the nodes are in the order of a FEMIXED
+    zone section and the handedness of each cell is kept. Node indices are unchanged.
+
+    Cells are numbered through the sections in the order returned, so a cell-centered
+    variable of the new zone is ``values[np.concatenate(cells)]``, with *cells* the
+    first item of each result.
+
+    Args:
+        node_map: Node indices with shape ``(num_cells, nodes_per_cell)``, or the same
+            values flattened.
+        zone_type: The zone type that *node_map* belongs to.
+
+    Returns:
+        Mapping from shape to ``(cells, node_map)``, ordered by shape value and holding
+        only the shapes that occur. ``cells`` is the ascending 0-based index in the
+        input of each cell of that shape and ``node_map`` has their nodes, with the
+        dtype of the input.
+
+    Raises:
+        ValueError: If *zone_type* is not a classic finite-element type, *node_map* does
+            not fit it, or any cell is not a recognized shape (see
+            :func:`classify_cells`).
+    """
+    nodes = _as_node_map(node_map, zone_type)
+    table = None if zone_type in _FIXED_SHAPE else _table(zone_type)
+    parts: dict[int, list[tuple[npt.NDArray[np.intp], npt.NDArray[np.integer]]]] = {}
+    for lo in range(0, len(nodes), _CHUNK_CELLS):
+        chunk = nodes[lo : lo + _CHUNK_CELLS]
+        shapes, rows = _classify_chunk(chunk, zone_type)
+        unknown = np.flatnonzero(shapes == UNKNOWN_SHAPE)
+        if unknown.size:
+            raise ValueError(f"cell {lo + int(unknown[0])} is not a recognized shape.")
+        for value in np.unique(shapes):
+            local = np.flatnonzero(shapes == value)
+            picked = chunk[local]
+            if table is not None:
+                width = CELL_SHAPE_NUM_NODES[FeCellShape(int(value))]
+                positions = table.orders[rows[local], :width].astype(np.intp)
+                picked = np.take_along_axis(picked, positions, axis=1)
+            parts.setdefault(int(value), []).append((local + lo, picked))
+    result: dict[FeCellShape, tuple[npt.NDArray[np.intp], npt.NDArray[np.integer]]] = {}
+    for value in sorted(parts):
+        chunks = parts[value]
+        if len(chunks) == 1:
+            result[FeCellShape(value)] = chunks[0]
+        else:
+            result[FeCellShape(value)] = (
+                np.concatenate([c[0] for c in chunks]),
+                np.concatenate([c[1] for c in chunks]),
+            )
+    return result
 
 
 def expand_cells(
@@ -581,9 +747,74 @@ def expand_cells(
     return nodes[:, list(columns)]
 
 
-# --------------------------------------------------------------------------------------
+# ======================================================================================
 # Face neighbors
+# ======================================================================================
+
+
 # --------------------------------------------------------------------------------------
+# Hashing functions
+# --------------------------------------------------------------------------------------
+
+
+_GAMMA = np.uint64(0x9E3779B97F4A7C15)
+_MUL64 = (np.uint64(0xBF58476D1CE4E5B9), np.uint64(0x94D049BB133111EB))
+_MUL32 = (np.uint32(0x7FEB352D), np.uint32(0x846CA68B))
+
+
+def _splitmix64(x: npt.NDArray[np.uint64]) -> npt.NDArray[np.uint64]:
+    """Return the SplitMix64 output for each generator state in *x*.
+
+    This is one step of the generator: add the golden ratio increment to the state, then
+    mix. Output ``k`` of a generator seeded with ``s`` is ``splitmix64(s + k * gamma)``
+    with ``gamma = 0x9E3779B97F4A7C15``, so ``splitmix64(0)`` is its first output for
+    seed 0. Arithmetic wraps modulo 2**64 and *x* is not modified.
+
+    Args:
+        x: Array of ``uint64`` states.
+
+    Returns:
+        New ``uint64`` array of the same shape.
+
+    References:
+        :func:`splitmix64` is the output function of the SplitMix64 generator, written
+        in 2015 by Sebastiano Vigna and dedicated to the public domain
+        (https://prng.di.unimi.it/splitmix64.c). It is a fixed increment version of the
+        SplittableRandom generator of G. L. Steele Jr., D. Lea and C. H. Flood, "Fast
+        splittable pseudorandom number generators", OOPSLA 2014,
+        https://doi.org/10.1145/2714064.2660195.
+    """
+    z = x + _GAMMA
+    z ^= z >> np.uint64(30)
+    z *= _MUL64[0]
+    z ^= z >> np.uint64(27)
+    z *= _MUL64[1]
+    z ^= z >> np.uint64(31)
+    return z
+
+
+def _lowbias32(x: npt.NDArray[np.uint32]) -> npt.NDArray[np.uint32]:
+    """Return the ``lowbias32`` hash of each value in *x*.
+
+    Zero maps to zero, so offset the input when that matters. Arithmetic wraps modulo
+    2**32 and *x* is not modified.
+
+    Args:
+        x: Array of ``uint32`` values.
+
+    Returns:
+        New ``uint32`` array of the same shape.
+
+    References:
+        Chris Wellons, "Prospecting for Hash Functions", 2018,
+        https://nullprogram.com/blog/2018/07/31/ (public domain, exact bias 0.1735).
+    """
+    z = x ^ (x >> np.uint32(16))
+    z *= _MUL32[0]
+    z ^= z >> np.uint32(15)
+    z *= _MUL32[1]
+    z ^= z >> np.uint32(16)
+    return z
 
 
 def _node_hashes(
@@ -602,7 +833,7 @@ def _node_hashes(
     index = np.arange(num_nodes, dtype=np.uint64)
     one_based = index + np.uint64(1)
     one_based ^= one_based >> np.uint64(32)
-    return splitmix64(index), lowbias32(one_based.astype(np.uint32))
+    return _splitmix64(index), _lowbias32(one_based.astype(np.uint32))
 
 
 def _hash_faces(
@@ -779,6 +1010,183 @@ def cell_face_neighbors(
     neighbors[a] = cell_b
     neighbors[b] = cell_a
     return np.ascontiguousarray(neighbors.reshape(num_faces, num_cells).T)
+
+
+# --------------------------------------------------------------------------------------
+# Matching zones that are stored in another order
+# --------------------------------------------------------------------------------------
+
+
+def _as_cell_nodes(node_map: npt.ArrayLike) -> npt.NDArray[np.integer]:
+    """Validate one node map for :func:`match_cells`.
+
+    Returns:
+        The node map as an integer array.
+
+    Raises:
+        ValueError: If it is not a two-dimensional integer array or holds a negative
+            index.
+    """
+    arr = np.asarray(node_map)
+    if arr.ndim != 2 or not np.issubdtype(arr.dtype, np.integer):
+        raise ValueError("node maps must be two-dimensional integer arrays.")
+    if arr.size and int(arr.min()) < 0:
+        raise ValueError("node maps hold negative node indices.")
+    return arr
+
+
+def _hash_cells(
+    nodes: npt.NDArray[np.integer],
+    wide: npt.NDArray[np.uint64],
+    narrow: npt.NDArray[np.uint32],
+    renumber: npt.NDArray[np.intp] | None = None,
+) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint32]]:
+    """Hash each cell by summing the hashes of its nodes, in chunks of cells.
+
+    Node indices are renumbered first when *renumber* is given. The sums wrap, so they
+    do not depend on the order of the nodes in a cell. A repeated node counts each time.
+
+    Returns:
+        The 64-bit and the 32-bit hash of each cell.
+    """
+    num_cells = len(nodes)
+    cell_wide = np.empty(num_cells, dtype=np.uint64)
+    cell_narrow = np.empty(num_cells, dtype=np.uint32)
+    for lo in range(0, num_cells, _CHUNK_CELLS):
+        chunk = nodes[lo : lo + _CHUNK_CELLS]
+        if renumber is not None:
+            chunk = renumber[chunk]
+        cell_wide[lo : lo + len(chunk)] = wide[chunk].sum(axis=1, dtype=np.uint64)
+        cell_narrow[lo : lo + len(chunk)] = narrow[chunk].sum(axis=1, dtype=np.uint32)
+    return cell_wide, cell_narrow
+
+
+def match_nodes(
+    ref_coords: Sequence[npt.ArrayLike], coords: Sequence[npt.ArrayLike]
+) -> npt.NDArray[np.intp] | None:
+    """Find how the nodes of a zone are ordered relative to a reference zone.
+
+    The same grid can be stored with its nodes in another order, for example by SZPLT
+    in large zones, or by another program that wrote the same mesh. Nodes are matched
+    when all of their coordinates are exactly equal, so the coordinates must have the
+    same values, not just the same locations to a tolerance, and must be unique.
+
+    Args:
+        ref_coords: One array per coordinate (``x``, ``y``, ``z``) of the reference
+            zone.
+        coords: The same coordinates of the zone to match.
+
+    Returns:
+        Array ``order`` where ``order[i]`` is the index in *coords* of the node that is
+        node ``i`` of the reference, so ``coords[k][order]`` equals ``ref_coords[k]``
+        and ``values[order]`` lists a nodal variable of the zone in the reference
+        order. ``np.argsort(order)`` is the inverse, giving the reference index of each
+        node of the zone. ``None`` if the zones do not have the same nodes, or if
+        coordinates repeat, which leaves the match ambiguous.
+
+    Raises:
+        ValueError: If a coordinate array is not one-dimensional or the coordinates of
+            a zone have different lengths.
+    """
+    ref = [np.asarray(c) for c in ref_coords]
+    got = [np.asarray(c) for c in coords]
+    for arrays in (ref, got):
+        if not arrays or any(c.ndim != 1 or len(c) != len(arrays[0]) for c in arrays):
+            raise ValueError("coordinates must be 1-D arrays of the same length.")
+    if len(ref) != len(got) or len(ref[0]) != len(got[0]):
+        return None
+    # lexsort treats the last key as the primary one, which does not matter here
+    ref_sort = np.lexsort(ref)
+    got_sort = np.lexsort(got)
+    repeated = np.ones(max(len(ref_sort) - 1, 0), dtype=bool)
+    for r, g in zip(ref, got, strict=True):
+        r, g = r[ref_sort], g[got_sort]
+        if not np.array_equal(r, g):
+            return None
+        repeated &= r[1:] == r[:-1]
+    if repeated.any():
+        return None
+    order = np.empty(len(ref_sort), dtype=np.intp)
+    order[ref_sort] = got_sort
+    return order
+
+
+def match_cells(
+    ref_node_maps: Sequence[npt.ArrayLike],
+    node_maps: Sequence[npt.ArrayLike],
+    node_order: npt.ArrayLike | None = None,
+) -> npt.NDArray[np.intp] | None:
+    """Find how the cells of a zone are ordered relative to a reference zone.
+
+    A cell is identified by its set of nodes, so cells match whatever the order of the
+    nodes within them. Compare the node maps in the reference order afterwards when the
+    order within a cell matters. Each cell is hashed by summing the per-node hash that
+    :func:`cell_face_neighbors` uses to match faces, and the cells are paired by sorting
+    the hashes, so the cost grows as ``num_cells * log(num_cells)``. A pair is accepted
+    only when a second, 32-bit hash agrees too.
+
+    Args:
+        ref_node_maps: The node map of each section of the reference zone, each with
+            shape ``(num_cells, nodes_per_cell)`` and 0-based. Pass ``[node_map]`` for a
+            classic zone.
+        node_maps: The node map of each section of the zone to match, in the same
+            layout.
+        node_order: Order of the nodes as returned by :func:`match_nodes`. Leave out if
+            both zones number their nodes alike.
+
+    Returns:
+        Array ``order`` where ``order[i]`` is the index in the zone of the cell that is
+        cell ``i`` of the reference, counting cells through the sections, so
+        ``values[order]`` lists a cell-centered variable of the zone in the reference
+        order. ``None`` if the zones do not have the same sections or the same cells,
+        or if a section of the reference holds cells with identical nodes, which leaves
+        the match ambiguous.
+
+    Raises:
+        ValueError: If a node map is not two-dimensional or integer, holds a negative
+            index, or holds an index beyond the nodes of the zone (the length of
+            *node_order*, when given).
+    """
+    ref_maps = [_as_cell_nodes(m) for m in ref_node_maps]
+    maps = [_as_cell_nodes(m) for m in node_maps]
+    if len(ref_maps) != len(maps) or any(
+        r.shape != m.shape for r, m in zip(ref_maps, maps, strict=True)
+    ):
+        return None
+    if node_order is None:
+        num_nodes = 1 + max(
+            (int(np.max(m)) for m in (*ref_maps, *maps) if m.size), default=0
+        )
+        renumber = None
+    else:
+        node_order = np.asarray(node_order)
+        num_nodes = len(node_order)
+        renumber = np.empty(num_nodes, dtype=np.intp)
+        renumber[node_order] = np.arange(num_nodes, dtype=np.intp)
+    for m in (*ref_maps, *maps):
+        if m.size and int(np.max(m)) >= num_nodes:
+            raise ValueError("node maps hold indices beyond the nodes of the zone.")
+    wide, narrow = _node_hashes(num_nodes)
+
+    orders = []
+    offset = 0
+    for ref_map, node_map in zip(ref_maps, maps, strict=True):
+        ref_wide, ref_narrow = _hash_cells(ref_map, wide, narrow)
+        got_wide, got_narrow = _hash_cells(node_map, wide, narrow, renumber)
+        ref_sort = np.argsort(ref_wide)
+        got_sort = np.argsort(got_wide)
+        ref_wide, got_wide = ref_wide[ref_sort], got_wide[got_sort]
+        if (ref_wide[1:] == ref_wide[:-1]).any() or not np.array_equal(
+            ref_wide, got_wide
+        ):
+            return None
+        if not np.array_equal(ref_narrow[ref_sort], got_narrow[got_sort]):
+            return None
+        cells = np.empty(len(ref_sort), dtype=np.intp)
+        cells[ref_sort] = got_sort
+        orders.append(cells + offset)
+        offset += len(cells)
+    return np.concatenate(orders) if orders else np.empty(0, dtype=np.intp)
 
 
 # --------------------------------------------------------------------------------------

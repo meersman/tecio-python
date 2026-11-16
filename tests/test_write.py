@@ -77,6 +77,8 @@ from create_test_data import (
     create_fe_tet,
     create_fe_tri,
     create_fe_two_bricks,
+    create_femixed_surface,
+    create_femixed_volume,
     create_ordered,
     create_poly_bconn_coarse,
     create_poly_bconn_fine,
@@ -92,12 +94,14 @@ from create_test_data import (
     create_polyhedron_mixed_faces,
     scalar_field,
 )
+from helpers import reordered_node_maps
 
 import tecio
 from tecio import (
     DataPacking,
     DataType,
     FaceNeighborMode,
+    FeCellShape,
     FileType,
     ValueLocation,
     ZoneType,
@@ -1368,6 +1372,494 @@ class TestWriteFEZone:
         with tecio.open(str(path), "r") as r:
             assert r.num_zones == 2
             assert [zn.title for zn in r.zones] == ["zone_1", "zone_2"]
+
+
+# ======================================================================================
+# FEMIXED zone tests (SZPLT only)
+# ======================================================================================
+
+
+class TestWriteFEMixedZone:
+    """Tests for write_femixed_zone, which only the SZPLT writer supports."""
+
+    def test_write_femixed_volume(self, output_path: Callable) -> None:
+        """FEMIXED -- a tetrahedron, pyramid, prism and hexahedron in four sections.
+
+        Demonstrates:
+        - ``write_femixed_zone`` call structure: ``cell_shapes`` and ``node_maps`` hold
+          one entry per section, and the node maps use 0-based node indices
+        - ``CELL_CENTERED`` data has one value per cell, counted through the sections
+        - Zone title, solution time, strand ID and aux data
+        - The writer records the section layout in its zone metadata
+        - SZPLT may store nodes and cells in another order than written, so the zone
+          read back is matched with the supplied one before its arrays are compared
+        """
+        x, y, z, shapes, maps = create_femixed_volume()
+        pressure = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+
+        path = output_path("write_femixed_volume.szplt")
+        with tecio.open(str(path), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z, pressure],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z", "p"],
+                value_locations=[ValueLocation.NODAL] * 3
+                + [ValueLocation.CELL_CENTERED],
+                title="Volume",
+                solution_time=1.5,
+                strand_id=1,
+                aux={"Solver": "test"},
+            )
+            meta = w.meta.zone(0)
+
+        # Writer metadata, read while the file is still open
+        assert meta is not None
+        assert meta.zone_type == ZoneType.FEMIXED
+        assert meta.section_shapes == tuple(shapes)
+        assert meta.section_num_elements == (1, 1, 1, 1)
+        assert (meta.num_nodes, meta.num_elements) == (18, 4)
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert isinstance(zone, tecio.TecplotFEMixedZoneReader)
+            assert zone.title == "Volume"
+            assert zone.solution_time == 1.5
+            assert zone.strand_id == 1
+            assert dict(zone.auxdata.items()) == {"Solver": "test"}
+            assert zone.section_shapes == tuple(shapes)
+            node_order = tecio.match_nodes([x, y, z], zone.get_array(["x", "y", "z"]))
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, zone.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(zone.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+            for name, want in zip("xyz", (x, y, z), strict=True):
+                np.testing.assert_array_equal(
+                    zone.variables[name].values[node_order], want
+                )
+            assert zone.variables["p"].value_location == ValueLocation.CELL_CENTERED
+            np.testing.assert_array_equal(
+                zone.variables["p"].values[cell_order], pressure
+            )
+
+    def test_write_femixed_surface(self, output_path: Callable) -> None:
+        """FEMIXED -- two triangles and a quadrilateral, and a section without cells.
+
+        Demonstrates:
+        - Two spatial variables give a surface zone, whose sections hold BAR, TRIANGLE
+          or QUADRILATERAL cells
+        - A section may hold no cells, its node map has shape ``(0, nodes_per_cell)``
+        """
+        x, y, shapes, maps = create_femixed_surface()
+        no_cells = np.zeros((0, 3), dtype=np.int64)
+
+        path = output_path("write_femixed_surface.szplt")
+        with tecio.open(str(path), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y"],
+                title="Surface",
+            )
+            w.write_femixed_zone(
+                data=[x, y],
+                cell_shapes=[*shapes, FeCellShape.TRIANGLE],
+                node_maps=[*maps, no_cells],
+                title="Surface_Empty_Section",
+            )
+
+        with tecio.open(str(path), "r") as r:
+            surface, empty_section = r.zones
+            assert surface.section_shapes == tuple(shapes)
+            assert surface.section_num_elements == (2, 1)
+            assert (surface.num_nodes, surface.num_elements) == (6, 3)
+            assert empty_section.section_shapes == (*shapes, FeCellShape.TRIANGLE)
+            assert empty_section.section_num_elements == (2, 1, 0)
+            for zone, want_maps in (
+                (surface, maps),
+                (empty_section, [*maps, no_cells]),
+            ):
+                node_order = tecio.match_nodes([x, y], zone.get_array(["x", "y"]))
+                assert node_order is not None
+                cell_order = tecio.match_cells(want_maps, zone.node_maps, node_order)
+                assert cell_order is not None
+                for got, want in zip(
+                    reordered_node_maps(zone.node_maps, node_order, cell_order),
+                    want_maps,
+                    strict=True,
+                ):
+                    np.testing.assert_array_equal(got, want)
+
+    def test_write_femixed_input_forms_and_defaults(
+        self, output_path: Callable
+    ) -> None:
+        """FEMIXED -- section shapes by name or value, flat node maps, default names.
+
+        Demonstrates:
+        - ``cell_shapes`` entries may be ``FeCellShape`` members, their names or their
+          integer values
+        - A node map may be flat, it is reshaped to ``(num_cells, nodes_per_cell)``
+        - Without ``variables`` the variables are named ``V1``, ``V2``, ... and without
+          ``title`` a zone is named ``FEMixed_Zone_<n>`` for its 0-based index
+        """
+        x, y, shapes, maps = create_femixed_surface()
+
+        path = output_path("write_femixed_input_forms.szplt")
+        with tecio.open(str(path), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y],
+                cell_shapes=["triangle", FeCellShape.QUADRILATERAL.value],
+                node_maps=[maps[0].ravel(), maps[1].ravel()],
+            )
+            w.write_femixed_zone(data=[x, y], cell_shapes=shapes, node_maps=maps)
+
+        with tecio.open(str(path), "r") as r:
+            assert r.variables == ["V1", "V2"]
+            assert [zone.title for zone in r.zones] == [
+                "FEMixed_Zone_0",
+                "FEMixed_Zone_1",
+            ]
+            for zone in r.zones:
+                assert zone.section_shapes == tuple(shapes)
+                assert zone.node_maps[0].shape == (2, 3)
+                assert zone.node_maps[1].shape == (1, 4)
+
+    def test_write_femixed_sharing(self, output_path: Callable) -> None:
+        """FEMIXED -- a second zone shares the node maps and grid of the first.
+
+        Demonstrates:
+        - ``con_sharing`` takes the connectivity of an earlier FEMIXED zone, so
+          ``cell_shapes`` and ``node_maps`` are omitted
+        - ``var_sharing`` shares the coordinates, and only the cell-centered ``p`` is
+          written again, with ``value_locations`` naming its location
+        - ``solution_time`` and ``strand_id`` make the two zones a transient solution
+        """
+        x, y, z, shapes, maps = create_femixed_volume()
+        cell_centered = [ValueLocation.CELL_CENTERED]
+
+        path = output_path("write_femixed_sharing.szplt")
+        with tecio.open(str(path), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z, np.array([1.0, 2.0, 3.0, 4.0])],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z", "p"],
+                value_locations=[ValueLocation.NODAL] * 3 + cell_centered,
+            )
+            w.write_femixed_zone(
+                data=[np.array([5.0, 6.0, 7.0, 8.0])],
+                con_sharing=0,
+                var_sharing={"x": 0, "y": 0, "z": 0},
+                value_locations=cell_centered,
+                solution_time=1.0,
+                strand_id=1,
+            )
+
+        with tecio.open(str(path), "r") as r:
+            first, second = r.zones
+            assert isinstance(second, tecio.TecplotFEMixedZoneReader)
+            assert first.shared_connectivity is None
+            assert second.shared_connectivity == 0
+            assert second.section_shapes == tuple(shapes)
+            assert second.num_nodes == 18
+            node_order = tecio.match_nodes([x, y, z], second.get_array(["x", "y", "z"]))
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, second.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(second.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+            assert second.variables["x"].shared_zone == 0
+            assert second.variables["p"].shared_zone is None
+            np.testing.assert_array_equal(
+                second.variables["p"].values[cell_order], [5, 6, 7, 8]
+            )
+            assert (second.solution_time, second.strand_id) == (1.0, 1)
+
+    def test_append_femixed_zone(self, output_path: Callable) -> None:
+        """FEMIXED -- append mode copies an existing zone, then adds a new one.
+
+        Demonstrates:
+        - Mode ``"a"`` re-emits every zone of the file, including a FEMIXED zone with
+          its metadata and aux data
+        - A zone added in append mode may share the connectivity of a copied zone
+        """
+        x, y, z, shapes, maps = create_femixed_volume()
+        pressure = np.array([1.0, 2.0, 3.0, 4.0])
+        cell_centered = [ValueLocation.CELL_CENTERED]
+
+        path = output_path("append_femixed_zone.szplt")
+        with tecio.open(str(path), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z, pressure],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z", "p"],
+                value_locations=[ValueLocation.NODAL] * 3 + cell_centered,
+                title="Original",
+                solution_time=1.5,
+                aux={"Solver": "test"},
+            )
+        with tecio.open(str(path), "a") as a:
+            a.write_femixed_zone(
+                data=[np.array([9.0, 9.0, 9.0, 9.0])],
+                con_sharing=0,
+                var_sharing={"x": 0, "y": 0, "z": 0},
+                value_locations=cell_centered,
+                title="Added",
+            )
+
+        with tecio.open(str(path), "r") as r:
+            assert [zone.title for zone in r.zones] == ["Original", "Added"]
+            original = r.zones[0]
+            assert original.section_shapes == tuple(shapes)
+            assert original.solution_time == 1.5
+            assert dict(original.auxdata.items()) == {"Solver": "test"}
+            node_order = tecio.match_nodes(
+                [x, y, z], original.get_array(["x", "y", "z"])
+            )
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, original.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(original.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+            np.testing.assert_array_equal(
+                original.variables["p"].values[cell_order], pressure
+            )
+            assert r.zones[1].shared_connectivity == 0
+
+
+class TestWriteFEMixedErrors:
+    """Inputs that cannot describe a valid FEMIXED zone are rejected before writing."""
+
+    @pytest.fixture
+    def path(self, output_path: Callable) -> Path:
+        """Output file for a write that is expected to fail.
+
+        Returns:
+            Output path string.
+        """
+        return output_path("write_femixed_error.szplt")
+
+    def test_sections(self, path: Path) -> None:
+        """A zone needs 1 to 16 sections, one node map each, and at least one cell."""
+        x, y, shapes, maps = create_femixed_surface()
+
+        # One node map per cell shape
+        with (
+            pytest.raises(ValueError, match="2 sections but node_maps has 1"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(data=[x, y], cell_shapes=shapes, node_maps=maps[:1])
+
+        # No more than 16 sections
+        with (
+            pytest.raises(ValueError, match="1 to 16 sections"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y],
+                cell_shapes=[FeCellShape.TRIANGLE] * 17,
+                node_maps=[maps[0]] * 17,
+            )
+
+        # At least one section
+        with (
+            pytest.raises(ValueError, match="1 to 16 sections"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(data=[x, y], cell_shapes=[], node_maps=[])
+
+        # At least one cell in the whole zone
+        with (
+            pytest.raises(ValueError, match="at least one cell"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y],
+                cell_shapes=[FeCellShape.TRIANGLE],
+                node_maps=[np.zeros((0, 3), dtype=np.int64)],
+            )
+
+    def test_node_maps(self, path: Path) -> None:
+        """Node maps must match their shape and hold non-negative integers."""
+        x, y, shapes, maps = create_femixed_surface()
+
+        # Nodes per cell must match the shape
+        with (
+            pytest.raises(ValueError, match=r"\(num_cells, 4\)"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y],
+                cell_shapes=[FeCellShape.QUADRILATERAL],
+                node_maps=[maps[0]],
+            )
+
+        # Node indices must be integers
+        with (
+            pytest.raises(ValueError, match="integers"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y], cell_shapes=shapes, node_maps=[maps[0] * 1.0, maps[1]]
+            )
+
+        # Node indices must not be negative
+        with (
+            pytest.raises(ValueError, match="negative"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y], cell_shapes=shapes, node_maps=[maps[0] - 1, maps[1]]
+            )
+
+        # The shape name must be known
+        with (
+            pytest.raises(ValueError, match="Unknown cell shape"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(data=[x, y], cell_shapes=["blob"], node_maps=[maps[0]])
+
+        # All sections have one spatial dimension: here triangles and tetrahedra
+        with (
+            pytest.raises(ValueError, match="same spatial dimension"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y, np.zeros_like(x)],
+                cell_shapes=[FeCellShape.TRIANGLE, FeCellShape.TETRAHEDRON],
+                node_maps=[np.array([[0, 1, 2]]), np.array([[0, 1, 2, 3]])],
+            )
+
+    def test_variables(self, path: Path) -> None:
+        """Data must cover the cell dimension and match the cell and node counts."""
+        x, y, z, shapes, maps = create_femixed_volume()
+
+        # TecIO crashes on fewer variables than the cell dimension, so it is checked
+        with (
+            pytest.raises(ValueError, match="at least 3"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y], cell_shapes=shapes, node_maps=maps, variables=["x", "y"]
+            )
+
+        # A cell-centered variable has one value per cell of all sections
+        with (
+            pytest.raises(ValueError, match="CELL_CENTERED but has 3 values"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y, z, np.zeros(3)],
+                cell_shapes=shapes,
+                node_maps=maps,
+                value_locations=[ValueLocation.NODAL] * 3
+                + [ValueLocation.CELL_CENTERED],
+            )
+
+        # DATAPACKING=POINT is only supported by the DAT writer
+        with (
+            pytest.raises(NotImplementedError, match="POINT"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y, z],
+                cell_shapes=shapes,
+                node_maps=maps,
+                datapacking="POINT",
+            )
+
+    def test_connectivity(self, path: Path) -> None:
+        """Connectivity comes from ``node_maps`` or from ``con_sharing``, not both."""
+        x, y, shapes, maps = create_femixed_surface()
+
+        # One of the two is required
+        with (
+            pytest.raises(ValueError, match="must be provided"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(data=[x, y])
+
+        # Not both
+        with (
+            pytest.raises(ValueError, match="must be omitted"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y], cell_shapes=shapes, node_maps=maps, variables=["x", "y"]
+            )
+            w.write_femixed_zone(
+                data=[], cell_shapes=shapes, node_maps=maps, con_sharing=0
+            )
+
+        # The zone to share from must already be written
+        with (
+            pytest.raises(ValueError, match="has not been written"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(data=[x, y], con_sharing=3)
+
+        # ... and must be a FEMIXED zone, here it is a single tetrahedron
+        xyz = np.array([0.0, 1.0, 0.0, 0.0])
+        with (
+            pytest.raises(ValueError, match="not a FEMIXED"),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_fe_zone(
+                data=[xyz, xyz, xyz],
+                zone_type=ZoneType.FETETRAHEDRON,
+                node_map=np.array([[0, 1, 2, 3]]),
+                variables=["x", "y", "z"],
+            )
+            w.write_femixed_zone(data=[xyz, xyz, xyz], con_sharing=0)
+
+
+@pytest.mark.parametrize("fmt", ["plt", "dat"])
+class TestWriteFEMixedUnsupported:
+    """PLT and DAT writers expose write_femixed_zone but decline the zone type."""
+
+    def test_femixed_zone_is_declined(self, fmt: str, output_path: Callable) -> None:
+        """FEMIXED zones need SZPLT, and ``write_fe_zone`` is no way around it."""
+        x, y, shapes, maps = create_femixed_surface()
+
+        path = _path(output_path, fmt, "write_femixed_unsupported")
+
+        # The error names the zone type, the format and the alternative
+        with (
+            pytest.raises(NotImplementedError, match="FEMIXED") as info,
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_femixed_zone(
+                data=[x, y], cell_shapes=shapes, node_maps=maps, variables=["x", "y"]
+            )
+        assert fmt.upper() in str(info.value)
+        assert ".szplt" in str(info.value)
+
+        # write_fe_zone does not accept the zone type either
+        with (
+            pytest.raises(NotImplementedError),
+            tecio.open(str(path), "w") as w,
+        ):
+            w.write_fe_zone(
+                data=[x, y],
+                zone_type=ZoneType.FEMIXED,
+                node_map=maps[0],
+                variables=["x", "y"],
+            )
 
 
 # ======================================================================================

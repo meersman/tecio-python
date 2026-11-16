@@ -38,7 +38,10 @@ from ._elements import (
     collapsed_zone_type,
     degenerate_edges,
     expand_cells,
+    match_cells,
+    match_nodes,
     shape_counts,
+    split_cells_by_shape,
 )
 from ._io import (
     AppendReadWrite,
@@ -58,6 +61,7 @@ from ._plt_read import TecplotPltReader
 from ._plt_write import TecplotPltWriter
 from ._reader import (
     TecplotAuxDataReader,
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
@@ -79,7 +83,10 @@ for _func in (
     collapsed_zone_type,
     degenerate_edges,
     expand_cells,
+    match_cells,
+    match_nodes,
     shape_counts,
+    split_cells_by_shape,
 ):
     _func.__module__ = "tecio"
 del _func
@@ -92,6 +99,7 @@ for _cls in (
     TecplotZoneReader,
     TecplotOrderedZoneReader,
     TecplotFEZoneReader,
+    TecplotFEMixedZoneReader,
     TecplotPolyZoneReader,
     TecplotVariableReader,
     TecplotAuxDataReader,
@@ -139,6 +147,7 @@ __all__ = [
     "TecplotZoneReader",
     "TecplotOrderedZoneReader",
     "TecplotFEZoneReader",
+    "TecplotFEMixedZoneReader",
     "TecplotPolyZoneReader",
     "TecplotVariableReader",
     "TecplotAuxDataReader",
@@ -157,7 +166,10 @@ __all__ = [
     "collapsed_zone_type",
     "degenerate_edges",
     "expand_cells",
+    "match_cells",
+    "match_nodes",
     "shape_counts",
+    "split_cells_by_shape",
     "Boolean",
     "DataPacking",
     "DataType",

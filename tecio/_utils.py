@@ -374,7 +374,7 @@ def requires_symbol(
                 "this symbol."
             )
 
-        return unavailable_func  # ty: ignore[invalid-return-type]
+        return unavailable_func  # ty: ignore[invalid-explicit-return]
 
     return decorator
 

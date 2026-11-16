@@ -102,6 +102,7 @@ import numpy.typing as npt
 
 from .. import (
     DataType,
+    TecplotFEMixedZoneReader,
     TecplotFEZoneReader,
     TecplotOrderedZoneReader,
     TecplotPolyZoneReader,
@@ -514,10 +515,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                             con_sharing=con_sharing,
                             **fe_kw,
                         )
+                    elif isinstance(zone, TecplotFEMixedZoneReader):
+                        con_sharing = zone.shared_connectivity
+                        writer.write_femixed_zone(
+                            data=writer_data,
+                            cell_shapes=(
+                                None if con_sharing is not None else zone.section_shapes
+                            ),
+                            node_maps=None
+                            if con_sharing is not None
+                            else zone.node_maps,
+                            con_sharing=con_sharing,
+                            **common_kw,
+                        )
                     else:
                         raise NotImplementedError(
                             f"Zone '{zone.title}' is neither an ordered nor a "
-                            "classic FE or poly zone; fixing is not supported for it."
+                            "classic FE, FEMIXED or poly zone; fixing is not supported "
+                            "for it."
                         )
 
     except Exception as exc:  # noqa: BLE001

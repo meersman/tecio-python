@@ -72,6 +72,7 @@ __all__ = [
     "is_64bit",
     "tec_zone_node_map_get_64",
     "tec_zone_node_map_get",
+    "tec_zone_node_map_get_flat",
     "tec_zone_face_nbr_get_mode",
     "tec_zone_face_nbr_get_num_connections",
     "tec_zone_face_nbr_get_num_values",
@@ -1509,7 +1510,7 @@ def tec_zone_get_type(handle: ctypes.c_void_p, zone_index: int) -> ZoneType:
 
 @requires_symbol("tecZoneGetNumSections")
 def tec_zone_get_num_sections(handle: ctypes.c_void_p, zone_index: int) -> int:
-    """Get the number of sections in a mixed finite-element zone.
+    """Get the number of sections in a FEMIXED zone.
 
     Only meaningful for zones of :attr:`ZoneType.FEMIXED`.
 
@@ -1542,7 +1543,7 @@ def tec_zone_get_num_sections(handle: ctypes.c_void_p, zone_index: int) -> int:
 def tec_zone_get_section_metrics(
     handle: ctypes.c_void_p, zone_index: int, section_index: int
 ) -> tuple[FeCellShape, int, int, int, int]:
-    """Get metrics for one section of a mixed finite-element zone.
+    """Get metrics for one section of a FEMIXED zone.
 
     Only meaningful for zones of :attr:`ZoneType.FEMIXED`; use
     :func:`tec_zone_get_num_sections` first to get the section count.
@@ -1797,6 +1798,74 @@ def tec_zone_node_map_get(
         )
 
     return np.ctypeslib.as_array(nodemap).reshape(num_elements, nodes_per_cell)
+
+
+@requires_symbol("tecZoneNodeMapGet")
+@requires_symbol("tecZoneNodeMapGet64")
+def tec_zone_node_map_get_flat(
+    handle: ctypes.c_void_p,
+    zone_index: int,
+    num_elements: int,
+    num_values: int,
+    is_64bit: bool = False,
+) -> npt.NDArray[np.int32] | npt.NDArray[np.int64]:
+    """Read a whole FE zone node map as one flat array.
+
+    Intended for FEMIXED zones, where cells have different node counts so the
+    node map has no single ``(num_elements, nodes_per_cell)`` shape. The cells of each
+    section are stored back to back, in section order.
+
+    Args:
+        handle (ctypes.c_void_p): File handle.
+        zone_index (int): 1-based zone index. For a zone that shares connectivity this
+            must be the zone that owns it, reading a sharing zone's own node map crashes
+            the C library.
+        num_elements (int): Total number of cells in the zone, over all sections.
+        num_values (int): Total number of node map values, the sum over sections of
+            cells times nodes per cell.
+        is_64bit (bool): Whether the zone's node map is 64-bit, see :func:`is_64bit`.
+
+    Returns:
+        Flat 1-based node numbers, dtype int64 if *is_64bit* else int32.
+
+    Raises:
+        TecioError: On C library error.
+
+    Note:
+        Always reads from the first cell. For FEMIXED zones the C library does not honor
+        a partial cell range, it returns more cells than requested, which would overrun
+        a buffer sized for the request.
+    """
+    assert lib is not None  # narrowed: @requires_symbol already checked
+    if is_64bit:
+        nodes: npt.NDArray[np.int32] | npt.NDArray[np.int64] = np.empty(
+            num_values, dtype=np.int64
+        )
+        ptr = nodes.ctypes.data_as(ctypes.POINTER(ctypes.c_int64))
+        ret = lib.tecZoneNodeMapGet64(
+            handle,
+            ctypes.c_int32(zone_index),
+            ctypes.c_int64(1),
+            ctypes.c_int64(num_elements),
+            ptr,
+        )
+    else:
+        nodes = np.empty(num_values, dtype=np.int32)
+        ptr32 = nodes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
+        ret = lib.tecZoneNodeMapGet(
+            handle,
+            ctypes.c_int32(zone_index),
+            ctypes.c_int64(1),
+            ctypes.c_int64(num_elements),
+            ptr32,
+        )
+    if ret != 0:
+        raise TecioError(
+            f"tecZoneNodeMap Error: handle={handle}, zone_index={zone_index}, "
+            f"num_elements={num_elements}, num_values={num_values}, "
+            f"is_64bit={is_64bit}, return_code={ret}"
+        )
+    return nodes
 
 
 @requires_symbol("tecZoneFaceNbrGetMode")
@@ -3062,9 +3131,9 @@ def tec_zone_create_fe_mixed(
     num_face_cons: int = 0,
     face_nbr_mode: FaceNeighborMode | int = FaceNeighborMode.LOCAL_ONE_TO_ONE,
 ) -> int:
-    """Create a mixed finite-element zone for writing.
+    """Create a FEMIXED zone for writing.
 
-    A mixed-element zone groups cells into 1-16 sections; every cell within
+    A FEMIXED zone groups cells into 1-16 sections; every cell within
     one section shares the same shape and grid order. All sections in a
     zone must share the same spatial dimensionality (all line, all surface,
     or all volume cell types), not a mix of them.
@@ -4067,9 +4136,9 @@ def tecznefemixed142(
     share_var_from_zone: Sequence[int] | None = None,
     share_connectivity_from_zone: int = 0,
 ) -> None:
-    """Create a mixed finite-element zone (classic API).
+    """Create a FEMIXED zone (classic API).
 
-    A mixed-element zone groups cells into 1-16 sections; every cell within
+    A FEMIXED zone groups cells into 1-16 sections; every cell within
     one section shares the same shape and grid order. All sections in a
     zone must share the same spatial dimensionality (all line, all surface,
     or all volume cell types), not a mix of them.

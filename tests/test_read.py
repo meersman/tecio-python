@@ -46,6 +46,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from create_test_data import create_femixed_block, create_femixed_volume
+from helpers import reordered_node_maps
 
 import tecio
 from tecio import DataPacking, DataType, ValueLocation, ZoneType
@@ -764,6 +766,135 @@ def test_peek_reports_poly_zone(tests_dir: Path) -> None:
     summary = tecio.peek(str(tests_dir / "Sphere.plt"))
     assert summary.zones[0].zone_type == ZoneType.FEPOLYHEDRON
     assert summary.zones[0].num_elements == 1380
+
+
+# ======================================================================================
+# FEMIXED zones (SZPLT only)
+#
+# TODO:
+# - Add external reference file.
+# ======================================================================================
+
+
+class TestReadFEMixed:
+    """Reading FEMIXED zones, which only SZPLT files can hold."""
+
+    def test_read_femixed_volume_zone(self, output_path: Callable) -> None:
+        """Counts, sections, node maps and variables of a FEMIXED zone.
+
+        Demonstrates:
+        - ``TecplotFEMixedZoneReader`` and its section attributes: ``num_sections``,
+          ``section_shapes``, ``section_num_elements`` and one entry of ``node_maps``
+          per section, each ``(num_cells, nodes_per_cell)`` of ``int64`` 0-based indices
+        - ``num_elements`` counts the cells of all sections, and a cell-centered
+          variable has that many values
+        - Node maps are read once and cached
+        - ``tecio.peek`` summarizes the zone without reading the node maps
+        - SZPLT may store nodes and cells in another order than written, so the zone
+          read back is matched with the supplied one before its arrays are compared
+        """
+        x, y, z, shapes, maps = create_femixed_volume()
+        pressure = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+
+        path = output_path("read_femixed_volume.szplt")
+        with tecio.open(str(path), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z, pressure],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z", "p"],
+                value_locations=[ValueLocation.NODAL] * 3
+                + [ValueLocation.CELL_CENTERED],
+            )
+
+        with tecio.open(str(path), "r") as r:
+            assert r.variables == ["x", "y", "z", "p"]
+            assert r.num_zones == 1
+
+            zone = r.zones[0]
+            assert isinstance(zone, tecio.TecplotFEMixedZoneReader)
+            assert zone.zone_type == ZoneType.FEMIXED
+            assert zone.datapacking == DataPacking.BLOCK
+            assert zone.shared_connectivity is None
+            assert zone.num_nodes == 18
+            assert zone.num_elements == 4
+            assert zone.num_sections == 4
+            assert zone.section_shapes == tuple(shapes)
+            assert zone.section_num_elements == (1, 1, 1, 1)
+
+            assert len(zone.node_maps) == 4
+            assert all(node_map.dtype == np.int64 for node_map in zone.node_maps)
+            assert zone.node_maps is zone.node_maps
+
+            xs, ys, zs = zone.get_array(["x", "y", "z"])
+            node_order = tecio.match_nodes([x, y, z], [xs, ys, zs])
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, zone.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(zone.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+            for name, want in zip("xyz", (x, y, z), strict=True):
+                assert zone.variables[name].value_location == ValueLocation.NODAL
+                np.testing.assert_array_equal(
+                    zone.variables[name].values[node_order], want
+                )
+            assert zone.variables["p"].value_location == ValueLocation.CELL_CENTERED
+            np.testing.assert_array_equal(zone.get_array("p")[cell_order], pressure)
+
+        summary = tecio.peek(str(path))
+        assert summary.zones[0].zone_type == ZoneType.FEMIXED
+        assert (summary.zones[0].num_nodes, summary.zones[0].num_elements) == (18, 4)
+
+    def test_read_femixed_large_zone_keeps_cells_together(
+        self, output_path: Callable
+    ) -> None:
+        """Every cell keeps its nodes, node order and cell-centered value.
+
+        The block is large enough for SZPLT to store its nodes and cells in another
+        order than written. The reader returns node maps, coordinates and cell-centered
+        values in the stored order, so ``match_nodes`` and ``match_cells`` put the zone
+        in the supplied order before it is compared.
+
+        Demonstrates:
+        - ``section_num_elements`` counts and the section order survive
+        - A cell-centered variable lists the cells of the first section first
+        - Once matched, node maps and data compare exactly with the supplied ones
+        """
+        x, y, z, shapes, maps = create_femixed_block(12)
+        num_cells = sum(len(m) for m in maps)
+        cell_values = np.arange(num_cells, dtype=np.float64)
+
+        path = output_path("read_femixed_large.szplt")
+        with tecio.open(str(path), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z, cell_values],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z", "c"],
+                value_locations=[ValueLocation.NODAL] * 3
+                + [ValueLocation.CELL_CENTERED],
+            )
+
+        with tecio.open(str(path), "r") as r:
+            zone = r.zones[0]
+            assert zone.section_shapes == tuple(shapes)
+            assert zone.section_num_elements == tuple(len(m) for m in maps)
+            assert (zone.num_nodes, zone.num_elements) == (len(x), num_cells)
+            node_order = tecio.match_nodes([x, y, z], zone.get_array(["x", "y", "z"]))
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, zone.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(zone.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+            np.testing.assert_array_equal(zone.get_array("c")[cell_order], cell_values)
 
 
 # ======================================================================================

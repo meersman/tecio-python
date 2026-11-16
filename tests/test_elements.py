@@ -9,16 +9,23 @@ write small synthetic files in all three formats.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+from create_test_data import (
+    create_fe_padded_brick,
+    create_fe_tet,
+    create_femixed_block,
+    create_femixed_volume,
+)
+from helpers import reordered_node_maps, scramble_zone
 
 import tecio
 from tecio import FaceNeighborMode, FeCellShape, ValueLocation, ZoneType
 from tecio import _elements as elements
-from tecio._hashing import lowbias32, splitmix64
 from tecio.cli.tecelretyp import main as tecelretyp
 
 BRICK = ZoneType.FEBRICK
@@ -106,11 +113,22 @@ class TestPatterns:
     """The collapse patterns found by walking every partition of a cell's nodes."""
 
     def test_brick_pattern_counts(self) -> None:
-        """A brick collapses to 102 tetrahedra, 102 pyramids and 36 prisms."""
+        """A brick collapses to 102 tetrahedra, 54 pyramids and 12 prisms."""
         assert len(_brick_patterns(FeCellShape.TETRAHEDRON)) == 102
-        assert len(_brick_patterns(FeCellShape.PYRAMID)) == 102
-        assert len(_brick_patterns(FeCellShape.PRISM)) == 36
+        assert len(_brick_patterns(FeCellShape.PYRAMID)) == 54
+        assert len(_brick_patterns(FeCellShape.PRISM)) == 12
         assert len(_brick_patterns(FeCellShape.HEXAHEDRON)) == 1
+
+    def test_folded_sliver_is_not_a_pyramid_or_prism(self) -> None:
+        """Right face counts are not enough, a node with two edges pinches the cell.
+
+        The cell below has the faces of a prism (two triangles and three quads) but the
+        node ``1`` touches only two faces that lie on top of each other.
+        """
+        folded = np.array([[0, 0, 0, 1, 2, 3, 4, 5]])
+        assert tecio.classify_cells(folded, BRICK)[0] == elements.UNKNOWN_SHAPE
+        with pytest.raises(ValueError, match="not a recognized shape"):
+            tecio.split_cells_by_shape(folded, BRICK)
 
     def test_quad_pattern_counts(self) -> None:
         """A quad collapses to a triangle in 4 ways."""
@@ -376,7 +394,159 @@ class TestCollapseExpand:
     def test_public_names_report_tecio(self) -> None:
         """Functions show their public module in help and docs."""
         assert tecio.collapse_cells.__module__ == "tecio"
+        assert tecio.split_cells_by_shape.__module__ == "tecio"
         assert "classify_cells" in tecio.__all__
+        assert "split_cells_by_shape" in tecio.__all__
+
+
+def _solid_volume(shape: FeCellShape, xyz: np.ndarray, nodes: np.ndarray) -> float:
+    """Signed volume of a tetrahedron, pyramid or prism in FEMIXED node order.
+
+    The solids are cut into tetrahedra along their node order, so the result is positive
+    for the right-handed layouts of the data format guide.
+
+    Returns:
+        The volume.
+    """
+    cuts = {
+        FeCellShape.TETRAHEDRON: [(0, 1, 2, 3)],
+        FeCellShape.PYRAMID: [(0, 1, 2, 4), (0, 2, 3, 4)],
+        FeCellShape.PRISM: [(0, 1, 2, 3), (1, 2, 3, 4), (2, 3, 4, 5)],
+    }[shape]
+    return sum(_tet_volumes(xyz, nodes[None, list(cut)])[0] for cut in cuts)
+
+
+def _cell_volume(shape: FeCellShape, xyz: np.ndarray, nodes: np.ndarray) -> float:
+    """Signed volume of a cell of any solid shape.
+
+    Returns:
+        The volume.
+    """
+    if shape == FeCellShape.HEXAHEDRON:
+        return _hex_volume(xyz[nodes])
+    return _solid_volume(shape, xyz, nodes)
+
+
+class TestSplitCells:
+    """split_cells_by_shape separates the cells of a zone, one section per shape."""
+
+    def test_split_brick_zone_into_sections(self, monkeypatch) -> None:
+        """A FEBRICK zone of collapsed cells gives one section for each solid shape.
+
+        Demonstrates:
+        - Sections come in the order tetrahedron, hexahedron, pyramid, prism, each with
+          the ascending indices of its cells in the input
+        - Repeated nodes are dropped, a hexahedron is unchanged and the input dtype is
+          kept
+        - A pyramid lists its base then its apex and a prism one triangle then the other
+        - Cells are processed in chunks, which does not change the sections
+        """
+        _, _, _, cells = create_fe_padded_brick()
+        cells = cells.astype(np.int32)
+
+        result = tecio.split_cells_by_shape(cells, BRICK)
+
+        # Sections, cell indices, shapes and dtypes
+        assert list(result) == [
+            FeCellShape.TETRAHEDRON,
+            FeCellShape.HEXAHEDRON,
+            FeCellShape.PYRAMID,
+            FeCellShape.PRISM,
+        ]
+        assert [r[0].tolist() for r in result.values()] == [[0, 3], [2], [1, 5], [4]]
+        assert [r[1].shape for r in result.values()] == [(2, 4), (1, 8), (2, 5), (1, 6)]
+        assert all(r[1].dtype == np.int32 for r in result.values())
+        np.testing.assert_array_equal(result[FeCellShape.HEXAHEDRON][1], cells[[2]])
+        # A flat node map gives the same sections
+        flat = tecio.split_cells_by_shape(cells.ravel(), BRICK)
+        for shape, (idx, nodes) in result.items():
+            np.testing.assert_array_equal(flat[shape][0], idx)
+            np.testing.assert_array_equal(flat[shape][1], nodes)
+
+        # Node order of pyramids and prisms
+        pyramids = result[FeCellShape.PYRAMID][1]
+        prisms = result[FeCellShape.PRISM][1]
+        assert pyramids[:, 4].tolist() == [8, 9]  # the apex is last
+        assert sorted(pyramids[0, :4]) == [4, 5, 6, 7]
+        assert sorted(prisms[0]) == [1, 2, 5, 6, 10, 11]
+        # node i + 3 is joined to node i by an edge of the prism
+        edges = {
+            tuple(sorted(e)) for e in zip(prisms[0, :3], prisms[0, 3:], strict=True)
+        }
+        assert edges == {(1, 5), (2, 6), (10, 11)}
+
+        # Chunks of 7 cells give the same sections as one pass
+        rng = np.random.default_rng(5)
+        many = cells[rng.integers(len(cells), size=200)] + 100
+        whole = tecio.split_cells_by_shape(many, BRICK)
+        monkeypatch.setattr(elements, "_CHUNK_CELLS", 7)
+        chunked = tecio.split_cells_by_shape(many, BRICK)
+        assert chunked.keys() == whole.keys()
+        for shape, (idx, nodes) in whole.items():
+            np.testing.assert_array_equal(chunked[shape][0], idx)
+            np.testing.assert_array_equal(chunked[shape][1], nodes)
+
+    @pytest.mark.parametrize("mirror", [False, True])
+    def test_every_collapse_keeps_the_handedness(self, mirror: bool) -> None:
+        """Pyramids, prisms and tetrahedra have the volume of the brick they came from.
+
+        The cells have flat faces, so their volume is the exact volume of the degenerate
+        brick. Mirroring the points makes every brick left-handed.
+        """
+        rng = np.random.default_rng(11)
+        for shape in (
+            FeCellShape.TETRAHEDRON,
+            FeCellShape.PYRAMID,
+            FeCellShape.PRISM,
+        ):
+            patterns = np.array(_brick_patterns(shape))
+            for labels in patterns:
+                nodes = np.unique(labels)
+                # Put every node where the brick corner of its first appearance sits,
+                # which gives flat faces, then nudge it so that no volume is zero.
+                xyz = np.array([_CORNERS[list(labels).index(n)] for n in nodes])
+                xyz = xyz + rng.normal(scale=0.02, size=xyz.shape)
+                if mirror:
+                    xyz[:, 0] *= -1
+                brick = _hex_volume(xyz[labels])
+                ((found, (_, cell)),) = tecio.split_cells_by_shape(
+                    labels[None, :], BRICK
+                ).items()
+                assert found == shape
+                assert len(set(cell[0])) == len(cell[0])
+                # Compare signs only: the brick is not flat-faced for every pattern.
+                assert np.sign(_solid_volume(shape, xyz, cell[0])) == np.sign(brick)
+
+    def test_split_single_shape_and_empty_zones(self) -> None:
+        """A zone of one cell shape comes back as one section, an empty zone as none.
+
+        Demonstrates:
+        - The node map is unchanged, and a flat node map gives the same section
+        - A zone without cells has no sections
+        """
+        _, _, _, tets = create_fe_tet()
+
+        ((shape, (cells, nodes)),) = tecio.split_cells_by_shape(tets, TET).items()
+
+        assert shape == FeCellShape.TETRAHEDRON
+        assert cells.tolist() == [0, 1]
+        np.testing.assert_array_equal(nodes, tets)
+        assert tecio.split_cells_by_shape(tets.ravel(), TET).keys() == {shape}
+        assert tecio.split_cells_by_shape(np.zeros((0, 8), dtype=int), BRICK) == {}
+
+    def test_split_rejects_unusable_input(self) -> None:
+        """Unrecognized cells and unsupported zone types are rejected."""
+        # A brick that is not any solid shape, here a sliver that has repeated edges
+        with pytest.raises(ValueError, match="cell 1 is not a recognized shape"):
+            tecio.split_cells_by_shape(
+                [[0, 1, 2, 3, 4, 5, 6, 7], [0, 0, 0, 0, 0, 0, 1, 2]], BRICK
+            )
+        # Only classic finite-element zone types have cells to split
+        with pytest.raises(ValueError, match="classic finite-element"):
+            tecio.split_cells_by_shape([[0, 1, 2]], ZoneType.FEPOLYGON)
+        # The node count of a cell must match the zone type
+        with pytest.raises(ValueError, match="nodes per cell"):
+            tecio.split_cells_by_shape([[0, 1, 2]], BRICK)
 
 
 # --------------------------------------------------------------------------------------
@@ -430,8 +600,10 @@ class TestNodeHashes:
     def test_uses_the_hash_functions(self) -> None:
         wide, narrow = elements._node_hashes(1000)
         index = np.arange(1000, dtype=np.uint64)
-        assert np.array_equal(wide, splitmix64(index))
-        assert np.array_equal(narrow, lowbias32((index + 1).astype(np.uint32)))
+        assert np.array_equal(wide, elements._splitmix64(index))
+        assert np.array_equal(
+            narrow, elements._lowbias32((index + 1).astype(np.uint32))
+        )
 
     def test_dtypes(self) -> None:
         wide, narrow = elements._node_hashes(10)
@@ -579,6 +751,193 @@ class TestCellFaceNeighbors:
             tecio.cell_face_neighbors(np.zeros((1, 5), dtype=int), BRICK)
         with pytest.raises(ValueError, match="negative"):
             tecio.cell_face_neighbors(np.array([[0, 1, -1]]), TRI)
+
+
+# --------------------------------------------------------------------------------------
+# Matching zones stored in another order
+# --------------------------------------------------------------------------------------
+
+
+class TestMatchNodesAndCells:
+    """Tests of :func:`tecio.match_nodes` and :func:`tecio.match_cells`."""
+
+    def test_match_recovers_a_scrambled_zone(self) -> None:
+        """Nodes, node maps and data compare exactly once the zone is matched.
+
+        Demonstrates:
+        - ``match_nodes`` gives the order that puts nodal arrays in the reference order
+        - ``np.argsort`` of that order gives the reference index of each node
+        - ``match_cells`` gives the order for cell-centered arrays, counting cells
+          through the sections
+        - Node maps of another integer type match, and ``node_order`` may be left out
+          when both zones number their nodes alike
+        """
+        x, y, z, _, maps = create_femixed_block(4)
+        coords = [x, y, z]
+        cell_values = np.arange(sum(len(m) for m in maps)) * 0.5
+        new_coords, new_maps, perm, cell_perm = scramble_zone(coords, maps, seed=3)
+        new_maps = [m.astype(np.int32) for m in new_maps]
+
+        node_order = tecio.match_nodes(coords, new_coords)
+        assert node_order is not None
+        for got, want in zip(new_coords, coords, strict=True):
+            np.testing.assert_array_equal(got[node_order], want)
+        np.testing.assert_array_equal(np.argsort(node_order), perm)
+
+        cell_order = tecio.match_cells(maps, new_maps, node_order)
+        assert cell_order is not None
+        np.testing.assert_array_equal(cell_values[cell_perm][cell_order], cell_values)
+        got_maps = reordered_node_maps(new_maps, node_order, cell_order)
+        for got, want in zip(got_maps, maps, strict=True):
+            np.testing.assert_array_equal(got, want)
+
+        reversed_maps = [m[::-1] for m in maps]
+        cell_order = tecio.match_cells(maps, reversed_maps)
+        starts = np.cumsum([0, *(len(m) for m in maps[:-1])])
+        expected = [
+            lo + np.arange(len(m))[::-1] for lo, m in zip(starts, maps, strict=True)
+        ]
+        np.testing.assert_array_equal(cell_order, np.concatenate(expected))
+
+    def test_match_a_zone_written_to_plt_and_szplt(self, tmp_path: Path) -> None:
+        """The same classic zone in PLT and SZPLT is matched, whichever order each uses.
+
+        Demonstrates:
+        - A classic zone is passed to ``match_cells`` as a list of one node map
+        - Nodal and cell-centered variables of one file are put in the order of the
+          other with ``values[node_order]`` and ``values[cell_order]``
+        - The zone is large enough for SZPLT to store it in another order than PLT
+        """
+        n = 9
+        node_map = _cube_mesh(n)
+        lattice = np.arange(n + 1, dtype=np.float64)
+        x, y, z = (
+            a.ravel() for a in np.meshgrid(lattice, lattice, lattice, indexing="ij")
+        )
+        pressure = x + 10.0 * y + 100.0 * z
+        density = np.arange(len(node_map), dtype=np.float64)
+
+        zones = {}
+        for suffix in ("plt", "szplt"):
+            path = tmp_path / f"cube.{suffix}"
+            with tecio.open(str(path), "w") as w:
+                w.write_fe_zone(
+                    zone_type=BRICK,
+                    data=[x, y, z, pressure, density],
+                    node_map=node_map,
+                    variables=["x", "y", "z", "p", "d"],
+                    value_locations=[ValueLocation.NODAL] * 4
+                    + [ValueLocation.CELL_CENTERED],
+                )
+            with tecio.open(str(path), "r") as r:
+                zone = r.zones[0]
+                zones[suffix] = (
+                    zone.get_array(["x", "y", "z"]),
+                    zone.node_map,
+                    zone.get_array("p"),
+                    zone.get_array("d"),
+                )
+        (ref_coords, ref_map, ref_p, ref_d) = zones["plt"]
+        (coords, node_map_szplt, p, d) = zones["szplt"]
+
+        node_order = tecio.match_nodes(ref_coords, coords)
+        assert node_order is not None
+        cell_order = tecio.match_cells([ref_map], [node_map_szplt], node_order)
+        assert cell_order is not None
+
+        np.testing.assert_array_equal(p[node_order], ref_p)
+        np.testing.assert_array_equal(d[cell_order], ref_d)
+        (got,) = reordered_node_maps([node_map_szplt], node_order, cell_order)
+        np.testing.assert_array_equal(got, ref_map)
+
+    def test_match_ignores_the_order_of_nodes_within_cells(self) -> None:
+        """Cells match by their set of nodes, so a rotated cell is still found."""
+        _, _, _, cells = create_fe_padded_brick()
+        maps = [cells]
+        rolled = [np.roll(m, 1, axis=1) for m in maps]
+
+        cell_order = tecio.match_cells(maps, rolled)
+
+        assert not np.array_equal(rolled[0], maps[0])
+        np.testing.assert_array_equal(cell_order, np.arange(len(maps[0])))
+
+    def test_match_reports_zones_that_differ(self) -> None:
+        """``None`` means the zones are not the same grid or cannot be told apart.
+
+        Demonstrates:
+        - A coordinate that changed, other node counts and other coordinate counts
+        - Coordinates that repeat, which leave the match ambiguous
+        - Other sections, a cell with another node, and identical cells in the
+          reference
+        """
+        x, y, z, _, maps = create_femixed_block(3)
+        coords = [x, y, z]
+        new_coords, new_maps, _, _ = scramble_zone(coords, maps, seed=1)
+
+        moved = [c.copy() for c in new_coords]
+        moved[0][0] += 0.25
+        assert tecio.match_nodes(coords, moved) is None
+        assert tecio.match_nodes(coords, [c[:-1] for c in new_coords]) is None
+        assert tecio.match_nodes([x, y], new_coords) is None
+        repeated = [c.copy() for c in coords]
+        for c in repeated:
+            c[1] = c[0]
+        assert tecio.match_nodes(repeated, repeated) is None
+
+        node_order = tecio.match_nodes(coords, new_coords)
+        assert tecio.match_cells(maps, new_maps, node_order) is not None
+        assert tecio.match_cells(maps, new_maps[:-1], node_order) is None
+        assert tecio.match_cells(maps, new_maps[::-1], node_order) is None
+        wrong = [m.copy() for m in new_maps]
+        wrong[1][0, 0] = wrong[1][1, 1]
+        assert tecio.match_cells(maps, wrong, node_order) is None
+        doubled = [np.concatenate([m, m[:1]]) for m in maps]
+        assert tecio.match_cells(doubled, doubled) is None
+
+    def test_match_rejects_unusable_input(self) -> None:
+        """Arrays that are not coordinates or node maps are errors, not mismatches."""
+        line = np.arange(3.0)
+        with pytest.raises(ValueError, match="1-D"):
+            tecio.match_nodes([], [])
+        with pytest.raises(ValueError, match="1-D"):
+            tecio.match_nodes([np.zeros((3, 3))], [line])
+        with pytest.raises(ValueError, match="same length"):
+            tecio.match_nodes([line, line[:2]], [line, line])
+
+        cell = np.array([[0, 1, 2]])
+        with pytest.raises(ValueError, match="integer"):
+            tecio.match_cells([cell.astype(float)], [cell])
+        with pytest.raises(ValueError, match="two-dimensional"):
+            tecio.match_cells([cell[0]], [cell])
+        with pytest.raises(ValueError, match="negative"):
+            tecio.match_cells([cell], [cell - 1])
+        with pytest.raises(ValueError, match="beyond"):
+            tecio.match_cells([cell], [cell + 1], node_order=[0, 1, 2])
+
+    def test_match_cells_in_chunks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Cells are hashed in chunks, which does not change the match."""
+        x, y, z, _, maps = create_femixed_block(4)
+        new_coords, new_maps, _, _ = scramble_zone([x, y, z], maps, seed=5)
+        node_order = tecio.match_nodes([x, y, z], new_coords)
+        whole = tecio.match_cells(maps, new_maps, node_order)
+        assert whole is not None
+
+        monkeypatch.setattr(elements, "_CHUNK_CELLS", 7)
+        chunked = tecio.match_cells(maps, new_maps, node_order)
+
+        np.testing.assert_array_equal(chunked, whole)
+
+    def test_match_cells_checks_a_second_hash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two cells whose 64-bit hashes collide are not taken for the same cell."""
+        wide = np.array([1, 2, 3, 0], dtype=np.uint64)  # nodes 0, 1 and 2, 3 collide
+        narrow = np.array([10, 20, 30, 40], dtype=np.uint32)
+        monkeypatch.setattr(elements, "_node_hashes", lambda n: (wide, narrow))
+        first, second = np.array([[0, 1]]), np.array([[2, 3]])
+
+        assert tecio.match_cells([first], [second]) is None
+        np.testing.assert_array_equal(tecio.match_cells([first], [first]), [0])
 
 
 # --------------------------------------------------------------------------------------
@@ -962,7 +1321,10 @@ class TestTecelretyp:
         out = capsys.readouterr().out
         assert "-> FETETRAHEDRON" in out
         assert "-> FETRIANGLE" in out
-        assert "unchanged (cells: 1 tetrahedron, 1 pyramid)" in out
+        assert (
+            "unchanged (cells: 1 tetrahedron, 1 pyramid; "
+            "could be FEMIXED, see --femixed)" in out
+        )
         assert "removing 15 node map entries" in out
 
     def test_check_exit_codes(
@@ -1114,6 +1476,433 @@ class TestTecelretyp:
         with tecio.open(str(out), "r") as r:
             assert r.zones[0].zone_type == TET
 
+    @pytest.mark.parametrize("mirror", [False, True])
+    def test_femixed_keeps_geometry_and_cell_values(
+        self, tmp_path: Path, mirror: bool
+    ) -> None:
+        """--femixed writes a zone of several shapes as FEMIXED, cell for cell.
+
+        Demonstrates:
+        - A FEBRICK zone of tetrahedra, pyramids, a prism and a hexahedron becomes one
+          section for each shape, in the order tetrahedron, hexahedron, pyramid, prism
+        - Every cell keeps its nodes, its volume, its handedness and its cell-centered
+          value, whether the grid is right-handed or mirrored to left-handed
+        """
+        x, y, z, cells = create_fe_padded_brick()
+        if mirror:
+            x = -x
+        xyz = np.column_stack([x, y, z])
+        src = tmp_path / "solids.plt"
+        with tecio.open(str(src), "w") as w:
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[x, y, z, np.arange(len(x)) * 1.5, np.arange(len(cells)) + 10.0],
+                node_map=cells,
+                variables=["x", "y", "z", "p", "c"],
+                value_locations=[ValueLocation.NODAL] * 4
+                + [ValueLocation.CELL_CENTERED],
+                title="solids",
+            )
+        out = tmp_path / "solids.szplt"
+
+        assert tecelretyp([str(src), "--femixed", "-o", str(out)]) == 0
+
+        with tecio.open(str(out), "r") as r:
+            zone = r.zones[0]
+            assert isinstance(zone, tecio.TecplotFEMixedZoneReader)
+            assert zone.title == "solids"
+            assert zone.section_shapes == (
+                FeCellShape.TETRAHEDRON,
+                FeCellShape.HEXAHEDRON,
+                FeCellShape.PYRAMID,
+                FeCellShape.PRISM,
+            )
+            assert zone.section_num_elements == (2, 1, 2, 1)
+            # Nodes may be stored in another order, so match them by coordinates
+            node_order = tecio.match_nodes([x, y, z], zone.get_array(["x", "y", "z"]))
+            assert node_order is not None
+            renumber = np.argsort(node_order)
+            np.testing.assert_allclose(
+                zone.variables["p"].values[node_order], np.arange(len(x)) * 1.5
+            )
+            # Sections are in shape order, so the values show where each cell came from
+            values = zone.variables["c"].values
+            assert sorted(values) == [10, 11, 12, 13, 14, 15]
+            assert not np.array_equal(values, np.arange(6) + 10.0)
+            k = 0
+            for shape, nodes in zip(zone.section_shapes, zone.node_maps, strict=True):
+                for cell in renumber[nodes]:
+                    source = cells[int(values[k]) - 10]
+                    assert set(cell) == set(source)
+                    expected = _hex_volume(xyz[source])
+                    assert _cell_volume(shape, xyz, cell) == pytest.approx(expected)
+                    assert (expected < 0) == mirror
+                    k += 1
+
+    @pytest.mark.parametrize("fmt", _FORMATS)
+    def test_femixed_needs_szplt_output(
+        self, fmt: str, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """FEMIXED zones need SZPLT, so the default output name and format change.
+
+        Demonstrates:
+        - Without ``-o`` the output is ``<stem>_retyped.szplt``, whatever the input
+        - ``-o`` with a PLT or DAT name is an error and writes no file
+        """
+        x, y, z, cells = create_fe_padded_brick()
+        src = tmp_path / f"solids.{fmt}"
+        with tecio.open(str(src), "w") as w:
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[x, y, z],
+                node_map=cells,
+                variables=["x", "y", "z"],
+            )
+
+        assert tecelretyp([str(src), "--femixed"]) == 0
+        assert tmp_path.joinpath("solids_retyped.szplt").exists()
+
+        for ext in ("plt", "dat"):
+            refused = tmp_path / f"refused.{ext}"
+            assert tecelretyp([str(src), "--femixed", "-o", str(refused)]) == 1
+            assert "--femixed needs .szplt output" in capsys.readouterr().err
+            assert not refused.exists()
+
+    @pytest.mark.parametrize("fmt", _FORMATS)
+    def test_femixed_is_reported_by_dry_run_and_check(
+        self, fmt: str, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The dry run points out --femixed, and --check only counts it when given.
+
+        Demonstrates:
+        - Without ``--femixed`` the zone is listed as unchanged with its cell shapes
+          and a hint, and ``--check`` exits 0
+        - With ``--femixed`` the zone is listed as FEMIXED, the summary counts it and
+          ``--check`` exits 1
+        - ``--zones`` limits ``--femixed`` as it limits retyping
+        """
+        x, y, z, cells = create_fe_padded_brick()
+        src = tmp_path / f"solids.{fmt}"
+        with tecio.open(str(src), "w") as w:
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[x, y, z],
+                node_map=cells,
+                variables=["x", "y", "z"],
+            )
+
+        assert tecelretyp(["--check", str(src)]) == 0
+        out = capsys.readouterr().out
+        assert (
+            "unchanged (cells: 2 tetrahedron, 1 hexahedron, 2 pyramid, 1 prism" in out
+        )
+        assert "could be FEMIXED, see --femixed" in out
+
+        assert tecelretyp(["--check", "--femixed", str(src)]) == 1
+        out = capsys.readouterr().out
+        assert "-> FEMIXED: 2 tetrahedron, 1 hexahedron, 2 pyramid, 1 prism" in out
+        assert "1 of 1 zones can be retyped (1 as FEMIXED), removing 16 node map" in out
+
+        assert tecelretyp(["--check", "--femixed", "-z", "0", str(src)]) == 1
+        assert tecelretyp(["--check", "--femixed", "-z", "5", str(src)]) == 2
+        assert "out of range" in capsys.readouterr().err
+
+    def test_femixed_is_used_only_where_it_helps(self, tmp_path: Path) -> None:
+        """Each zone of a file gets the smallest zone type that holds its cells.
+
+        Demonstrates:
+        - Cells of several shapes become a FEMIXED zone
+        - A zone of one shape that has a classic zone type is retyped instead
+        - A zone of one shape that has none, like pyramids, is a one-section zone
+        - A zone of hexahedra already uses every node, so it is not touched
+        """
+        x, y, z, cells = create_fe_padded_brick()
+        # Zone title, zone type, node map and the nodes that its cells use
+        zones = [
+            ("solids", BRICK, cells, np.column_stack([x, y, z])),
+            ("tets", BRICK, cells[[0, 3]], np.column_stack([x, y, z])[:11]),
+            ("pyramids", BRICK, cells[[1, 5]], np.column_stack([x, y, z])[:10]),
+            ("hexahedron", BRICK, cells[[2]], np.column_stack([x, y, z])[:8]),
+        ]
+        src = tmp_path / "zones.plt"
+        with tecio.open(str(src), "w", variables=["x", "y", "z", "p", "c"]) as w:
+            for title, zone_type, node_map, xyz in zones:
+                w.write_fe_zone(
+                    zone_type=zone_type,
+                    data=[
+                        *xyz.T,
+                        np.arange(len(xyz)) * 1.5,
+                        np.arange(len(node_map)) + 10.0,
+                    ],
+                    node_map=node_map,
+                    value_locations=[ValueLocation.NODAL] * 4
+                    + [ValueLocation.CELL_CENTERED],
+                    title=title,
+                )
+        out = tmp_path / "zones.szplt"
+
+        assert tecelretyp([str(src), "--femixed", "-o", str(out)]) == 0
+
+        with tecio.open(str(out), "r") as r:
+            solids, tets, pyramids, hexahedron = r.zones
+            assert isinstance(solids, tecio.TecplotFEMixedZoneReader)
+            assert solids.section_num_elements == (2, 1, 2, 1)
+
+            assert tets.zone_type == TET
+            tet_maps = [np.array([[0, 1, 3, 4], [1, 10, 2, 6]])]
+            node_order = tecio.match_nodes(
+                [x[:11], y[:11], z[:11]], tets.get_array(["x", "y", "z"])
+            )
+            assert node_order is not None
+            cell_order = tecio.match_cells(tet_maps, [tets.node_map], node_order)
+            assert cell_order is not None
+            (got,) = reordered_node_maps([tets.node_map], node_order, cell_order)
+            np.testing.assert_array_equal(got, tet_maps[0])
+
+            assert isinstance(pyramids, tecio.TecplotFEMixedZoneReader)
+            assert pyramids.section_shapes == (FeCellShape.PYRAMID,)
+            assert pyramids.section_num_elements == (2,)
+
+            assert hexahedron.zone_type == BRICK
+            node_order = tecio.match_nodes(
+                [x[:8], y[:8], z[:8]], hexahedron.get_array(["x", "y", "z"])
+            )
+            assert node_order is not None
+            cell_order = tecio.match_cells(
+                [cells[[2]]], [hexahedron.node_map], node_order
+            )
+            assert cell_order is not None
+            (got,) = reordered_node_maps([hexahedron.node_map], node_order, cell_order)
+            np.testing.assert_array_equal(got, cells[[2]])
+
+    def test_femixed_zones_sharing_connectivity(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Zones that share one node map are written alike, or all left alone.
+
+        Demonstrates:
+        - A zone group becomes FEMIXED together, every zone keeps sharing from the owner
+          and has its cell-centered values reordered like the owner's
+        - Two zones with node maps of their own that share a cell-centered variable
+          cannot be reordered independently, so they are left unchanged
+        """
+        x, y, z, cells = create_fe_padded_brick()
+        locations = [ValueLocation.NODAL, ValueLocation.CELL_CENTERED]
+        src = tmp_path / "shared.plt"
+        with tecio.open(str(src), "w", variables=["x", "y", "z", "p", "c"]) as w:
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[x, y, z, np.arange(len(x)) * 1.5, np.arange(6) + 10.0],
+                node_map=cells,
+                value_locations=[ValueLocation.NODAL] * 4
+                + [ValueLocation.CELL_CENTERED],
+                title="owner",
+            )
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[np.arange(len(x)) * 2.0, np.arange(6) + 100.0],
+                var_sharing={"x": 0, "y": 0, "z": 0},
+                value_locations=locations,
+                con_sharing=0,
+                title="sharer",
+            )
+        out = tmp_path / "shared.szplt"
+
+        assert tecelretyp([str(src), "--femixed", "-o", str(out)]) == 0
+
+        with tecio.open(str(out), "r") as r:
+            owner, sharer = r.zones
+            assert isinstance(owner, tecio.TecplotFEMixedZoneReader)
+            assert isinstance(sharer, tecio.TecplotFEMixedZoneReader)
+            assert sharer.shared_connectivity == 0
+            assert sharer.variables["x"].shared_zone == 0
+            np.testing.assert_array_equal(
+                sharer.variables["c"].values - 100, owner.variables["c"].values - 10
+            )
+
+        linked = tmp_path / "linked.plt"
+        with tecio.open(str(linked), "w", variables=["x", "y", "z", "p", "c"]) as w:
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[x, y, z, np.arange(len(x)) * 1.5, np.arange(6) + 10.0],
+                node_map=cells,
+                value_locations=[ValueLocation.NODAL] * 4
+                + [ValueLocation.CELL_CENTERED],
+                title="a",
+            )
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[np.arange(len(x)) * 2.0],
+                node_map=cells,
+                var_sharing={"x": 0, "y": 0, "z": 0, "c": 0},
+                value_locations=[ValueLocation.NODAL],
+                title="b",
+            )
+
+        assert tecelretyp(["--check", "--femixed", str(linked)]) == 0
+
+        out = capsys.readouterr().out
+        assert "unchanged (shares a cell-centered variable with zone 1)" in out
+        assert "unchanged (shares a cell-centered variable with zone 0)" in out
+
+    @pytest.mark.parametrize("fmt", ["plt", "dat"])
+    def test_femixed_discards_face_neighbors(
+        self, fmt: str, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """SZPLT stores no face neighbors, so --femixed does not stop for them.
+
+        Demonstrates:
+        - The dry run says that the face-neighbor data is discarded
+        - The FEMIXED zone is written without it, where retyping alone would refuse
+        """
+        x, y, z, cells = create_fe_padded_brick()
+        src = tmp_path / f"fn.{fmt}"
+        with tecio.open(str(src), "w") as w:
+            w.write_fe_zone(
+                zone_type=BRICK,
+                data=[x, y, z],
+                node_map=cells,
+                variables=["x", "y", "z"],
+                face_neighbors=np.array([0, 1, 1]),
+                face_neighbor_mode=FaceNeighborMode.LOCAL_ONE_TO_ONE,
+            )
+
+        assert tecelretyp(["--dry-run", str(src)]) == 0
+
+        out = capsys.readouterr().out
+        assert "could be FEMIXED" in out
+        assert "writes 1 zone as FEMIXED, discards face-neighbor data" in out
+        written = tmp_path / "out.szplt"
+        assert tecelretyp([str(src), "--femixed", "-o", str(written)]) == 0
+        with tecio.open(str(written), "r") as r:
+            assert isinstance(r.zones[0], tecio.TecplotFEMixedZoneReader)
+
+    def test_existing_femixed_zones_are_copied_unchanged(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A FEMIXED zone in the input is copied, beside zones that are retyped.
+
+        Demonstrates:
+        - The summary lists the zone as unchanged and a file with nothing else to do
+          is not rewritten
+        - In a file that also holds a retypable zone, the FEMIXED zone keeps its
+          sections and node maps
+        """
+        x, y, z, shapes, maps = create_femixed_volume()
+        volume = tmp_path / "volume.szplt"
+        with tecio.open(str(volume), "w") as w:
+            w.write_femixed_zone(
+                data=[x, y, z],
+                cell_shapes=shapes,
+                node_maps=maps,
+                variables=["x", "y", "z"],
+            )
+        untouched = tmp_path / "untouched.szplt"
+
+        assert tecelretyp([str(volume), "-o", str(untouched)]) == 0
+
+        assert "FEMIXED" in capsys.readouterr().out
+        assert not untouched.exists()
+
+        tets = tecio.expand_cells([[0, 1, 2, 3]], TET, BRICK)
+        both = tmp_path / "both.szplt"
+        with tecio.open(str(both), "w", variables=["x", "y", "z"]) as w:
+            w.write_fe_zone(
+                zone_type=BRICK, data=[c[:4] for c in (x, y, z)], node_map=tets
+            )
+            w.write_femixed_zone(data=[x, y, z], cell_shapes=shapes, node_maps=maps)
+        retyped = tmp_path / "retyped.szplt"
+
+        assert tecelretyp([str(both), "-o", str(retyped)]) == 0
+
+        with tecio.open(str(retyped), "r") as r:
+            assert r.zones[0].zone_type == TET
+            femixed = r.zones[1]
+            assert isinstance(femixed, tecio.TecplotFEMixedZoneReader)
+            assert femixed.section_shapes == tuple(shapes)
+            node_order = tecio.match_nodes(
+                [x, y, z], femixed.get_array(["x", "y", "z"])
+            )
+            assert node_order is not None
+            cell_order = tecio.match_cells(maps, femixed.node_maps, node_order)
+            assert cell_order is not None
+            for got, want in zip(
+                reordered_node_maps(femixed.node_maps, node_order, cell_order),
+                maps,
+                strict=True,
+            ):
+                np.testing.assert_array_equal(got, want)
+
+    def test_dry_run_estimates_and_suggests_commands(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Sizes of each option and the commands that give them follow the table.
+
+        Demonstrates:
+        - The table gives the connectivity size now, after retyping, after retyping and
+          writing FEMIXED zones, and as poly zones (an estimate only)
+        - Each suggested command shows what it saves and does, and the path is quoted
+          so that it can be pasted into a shell
+        - ``--zones`` is kept in a suggestion, and only commands that save anything for
+          the listed zones are suggested
+        """
+        x, y, z, cells = create_fe_padded_brick()
+        xyz = np.column_stack([x, y, z])
+        src = tmp_path / "flow data.plt"
+        # Solids need FEMIXED, tets only a retype and the hexahedron nothing
+        with tecio.open(str(src), "w", variables=["x", "y", "z", "p", "c"]) as w:
+            for title, node_map, nodes in (
+                ("solids", cells, xyz),
+                ("tets", cells[[0, 3]], xyz[:11]),
+                ("hexahedron", cells[[2]], xyz[:8]),
+            ):
+                w.write_fe_zone(
+                    zone_type=BRICK,
+                    data=[
+                        *nodes.T,
+                        np.arange(len(nodes)) * 1.5,
+                        np.arange(len(node_map)) + 10.0,
+                    ],
+                    node_map=node_map,
+                    value_locations=[ValueLocation.NODAL] * 4
+                    + [ValueLocation.CELL_CENTERED],
+                    title=title,
+                )
+
+        assert tecelretyp(["--dry-run", str(src)]) == 0
+
+        out = capsys.readouterr().out
+        assert "Estimated size of the connectivity" in out
+        rows = dict(
+            re.findall(
+                r"^  (Current|Retype|Retype \+ FEMIXED|Poly \(estimate only\))\s+(\d+ B)",
+                out,
+                flags=re.MULTILINE,
+            )
+        )
+        # 4-byte entries. Current: 6 + 2 + 1 cells of 8 nodes. Retype: the tets drop to
+        # 4 nodes. FEMIXED: the solids keep 2 x 4 + 8 + 2 x 5 + 6 nodes. Poly: faces
+        # per cell of 48 B (tet), 84 B (hexahedron), 62 B (pyramid) and 66 B (prism)
+        assert rows == {
+            "Current": "288 B",
+            "Retype": "256 B",
+            "Retype + FEMIXED": "192 B",
+            "Poly (estimate only)": "550 B",
+        }
+        assert "Suggested commands" in out
+        assert f"tecelretyp '{src}'\n      -32 B" in out
+        assert "retypes 1 zone\n" in out
+        assert f"tecelretyp --femixed '{src}'\n      -96 B" in out
+        assert "retypes 1 zone, writes 1 zone as FEMIXED" in out
+
+        assert tecelretyp(["--dry-run", "-z", "0", str(src)]) == 0
+        out = capsys.readouterr().out
+        assert f"tecelretyp --femixed -z 0 '{src}'" in out
+        assert f"tecelretyp -z 0 '{src}'" not in out
+
+        assert tecelretyp(["--dry-run", "-z", "2", str(src)]) == 0
+        assert "Suggested commands: none" in capsys.readouterr().out
+
 
 def _write_with_aux_and_polygon(path: Path) -> None:
     """Write upcast tetrahedra and a polygon zone, with dataset and variable aux data."""
@@ -1156,6 +1945,19 @@ class TestTecelretypOtherContent:
                 np.testing.assert_array_equal(
                     getattr(b.zones[1], name), getattr(a.zones[1], name)
                 )
+
+    def test_dry_run_estimates_count_poly_zones(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A polygon zone is counted at its face arrays, and is the same as poly output."""
+        src = tmp_path / "in.plt"
+        _write_with_aux_and_polygon(src)
+        assert tecelretyp(["--dry-run", str(src)]) == 0
+        out = capsys.readouterr().out
+        # 3 upcast bricks (96 B) and 7 faces of 2 nodes, 2 elements (112 B) -> 208 B
+        assert "Current" in out and "208 B" in out
+        assert "Retype " in out and "160 B" in out
+        assert "Poly (estimate only)" in out and "256 B" in out
 
     def test_unwritable_zone_removes_the_output(
         self, tmp_path: Path, capsys: pytest.CaptureFixture

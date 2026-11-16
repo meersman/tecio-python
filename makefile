@@ -53,10 +53,12 @@ format:
 
 # Run linter
 lint:
+	$(PYTHON) -m pip install --upgrade ruff
 	ruff check
 
 # Run type checker
 typecheck:
+	$(PYTHON) -m pip install --upgrade ty
 	ty check tecio
 
 # Run all checks
