@@ -21,7 +21,7 @@ from create_test_data import (
     create_femixed_block,
     create_femixed_volume,
 )
-from helpers import reordered_node_maps
+from helpers import reordered_node_maps, scramble_zone
 
 import tecio
 from tecio import FaceNeighborMode, FeCellShape, ValueLocation, ZoneType
@@ -758,30 +758,6 @@ class TestCellFaceNeighbors:
 # --------------------------------------------------------------------------------------
 
 
-def _scramble(
-    coords: list[np.ndarray], maps: list[np.ndarray], seed: int
-) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
-    """Renumber the nodes and shuffle the cells of each section, as SZPLT may.
-
-    Returns:
-        The coordinates, the node maps, the node permutation (new node ``i`` is old
-        node ``perm[i]``) and the cell permutation (new cell ``i`` is old cell
-        ``cell_perm[i]``, counting through the sections).
-    """
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(coords[0]))
-    inverse = np.argsort(perm)
-    cell_perm = []
-    scrambled = []
-    offset = 0
-    for node_map in maps:
-        order = rng.permutation(len(node_map))
-        scrambled.append(inverse[node_map][order])
-        cell_perm.append(order + offset)
-        offset += len(node_map)
-    return [c[perm] for c in coords], scrambled, perm, np.concatenate(cell_perm)
-
-
 class TestMatchNodesAndCells:
     """Tests of :func:`tecio.match_nodes` and :func:`tecio.match_cells`."""
 
@@ -799,7 +775,7 @@ class TestMatchNodesAndCells:
         x, y, z, _, maps = create_femixed_block(4)
         coords = [x, y, z]
         cell_values = np.arange(sum(len(m) for m in maps)) * 0.5
-        new_coords, new_maps, perm, cell_perm = _scramble(coords, maps, seed=3)
+        new_coords, new_maps, perm, cell_perm = scramble_zone(coords, maps, seed=3)
         new_maps = [m.astype(np.int32) for m in new_maps]
 
         node_order = tecio.match_nodes(coords, new_coords)
@@ -896,7 +872,7 @@ class TestMatchNodesAndCells:
         """
         x, y, z, _, maps = create_femixed_block(3)
         coords = [x, y, z]
-        new_coords, new_maps, _, _ = _scramble(coords, maps, seed=1)
+        new_coords, new_maps, _, _ = scramble_zone(coords, maps, seed=1)
 
         moved = [c.copy() for c in new_coords]
         moved[0][0] += 0.25
@@ -941,7 +917,7 @@ class TestMatchNodesAndCells:
     def test_match_cells_in_chunks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Cells are hashed in chunks, which does not change the match."""
         x, y, z, _, maps = create_femixed_block(4)
-        new_coords, new_maps, _, _ = _scramble([x, y, z], maps, seed=5)
+        new_coords, new_maps, _, _ = scramble_zone([x, y, z], maps, seed=5)
         node_order = tecio.match_nodes([x, y, z], new_coords)
         whole = tecio.match_cells(maps, new_maps, node_order)
         assert whole is not None

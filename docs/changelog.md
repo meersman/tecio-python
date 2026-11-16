@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FEMIXED (mixed finite-element) zones suppport (read and write) for SZPLT
   files.
 
+### Changed
+
+- `tecmerge --merge-grid` now compares the grid variables and, for classic FE
+  zones, the connectivity of zones before sharing. A zone with the same grid
+  stored in another node and cell order (e.g. the same mesh in PLT and SZL)
+  shares the grid and has its nodal and cell-centered variables reordered to
+  match. Zones not matching the connectivity in any order retain their grid.
+
 ---
 
 ```{include} changelog/v0.4.1.md

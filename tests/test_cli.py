@@ -40,8 +40,8 @@ from typing import Any
 
 import numpy as np
 import pytest
-from create_test_data import create_femixed_volume
-from helpers import reordered_node_maps
+from create_test_data import create_fe_two_bricks, create_femixed_volume, create_ordered
+from helpers import reordered_node_maps, scramble_zone
 
 import tecio
 from tecio import ValueLocation, ZoneType
@@ -937,6 +937,328 @@ class TestTecmerge:
         ])
         assert ret == 0
         assert dst.stat().st_size > 0
+
+    def test_merge_grid_shares_one_mesh_stored_in_every_format(
+        self, tmp_path: Path
+    ) -> None:
+        """--merge-grid shares the grid of the same mesh in PLT, DAT and SZPLT files.
+
+        Demonstrates:
+        - Zones of the later files hold no grid of their own, they share the
+          coordinates and the connectivity of the zones of the first file
+        - Merged zones are compared with their source zones by ``match_nodes`` and
+          ``match_cells``, so the files need not store the mesh in the same order
+        """
+        sources = [_copy_onera(fmt, tmp_path, f"onera_{fmt}") for fmt in _FORMATS]
+        dst = tmp_path / "merged.szplt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), *map(str, sources)]) == 0
+
+        with tecio.open(str(dst), "r") as merged:
+            assert merged.num_zones == len(sources) * _NUM_ZONES
+            for k, zone in enumerate(merged.zones):
+                first = k % _NUM_ZONES
+                shared = k >= _NUM_ZONES
+                assert zone.shared_connectivity == (first if shared else None)
+                for var in zone.variables:
+                    is_grid = var.name in ("x", "y", "z")
+                    assert var.shared_zone == (first if shared and is_grid else None)
+            for fi, source in enumerate(sources):
+                with tecio.open(str(source), "r") as src:
+                    for zi, src_zone in enumerate(src.zones):
+                        zone = merged.zones[fi * _NUM_ZONES + zi]
+                        node_order = tecio.match_nodes(
+                            zone.get_array(["x", "y", "z"]),
+                            src_zone.get_array(["x", "y", "z"]),
+                        )
+                        assert node_order is not None
+                        cell_order = tecio.match_cells(
+                            [zone.node_map], [src_zone.node_map], node_order
+                        )
+                        assert cell_order is not None
+                        for name in src.variables:  # all nodal
+                            np.testing.assert_allclose(
+                                src_zone.get_array(name)[node_order],
+                                zone.get_array(name),
+                                rtol=1e-6,
+                            )
+
+    def test_merge_grid_reorders_data_onto_the_shared_grid(
+        self, tmp_path: Path
+    ) -> None:
+        """A copy of Onera with its nodes and cells shuffled still shares the grid.
+
+        Demonstrates:
+        - A zone whose nodes and cells are in another order than the first file's
+          shares its coordinates and connectivity with it
+        - Its variables are reordered to match, so they equal those of the first file
+        - Compared with the shuffled source, ``match_nodes`` and ``match_cells`` give
+          the order that undoes the merge
+        """
+        original = _ONERA["plt"]
+        scrambled = tmp_path / "scrambled.plt"
+        with tecio.open(str(original), "r") as r:
+            names = list(r.variables)
+            with tecio.open(str(scrambled), "w", variables=names) as w:
+                for k, zone in enumerate(r.zones):
+                    data = [zone.get_array(name) for name in names]
+                    _, (node_map,), perm, _ = scramble_zone(
+                        data[:3], [zone.node_map], seed=k
+                    )
+                    w.write_fe_zone(
+                        zone_type=zone.zone_type,
+                        data=[values[perm] for values in data],  # all nodal
+                        node_map=node_map,
+                        title=zone.title,
+                    )
+        dst = tmp_path / "merged.plt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), str(original),
+                         str(scrambled)]) == 0  # fmt: skip
+
+        with (
+            tecio.open(str(original), "r") as orig,
+            tecio.open(str(scrambled), "r") as shuffled,
+            tecio.open(str(dst), "r") as merged,
+        ):
+            assert merged.num_zones == 2 * _NUM_ZONES
+            for zi in range(_NUM_ZONES):
+                ref, got, out = (
+                    orig.zones[zi],
+                    shuffled.zones[zi],
+                    merged.zones[_NUM_ZONES + zi],
+                )
+                ref_xyz = ref.get_array(["x", "y", "z"])
+                got_xyz = got.get_array(["x", "y", "z"])
+                assert not np.array_equal(got_xyz[0], ref_xyz[0])  # really shuffled
+
+                assert out.shared_connectivity == zi
+                assert all(out.variables[n].shared_zone == zi for n in "xyz")
+                np.testing.assert_array_equal(out.node_map, ref.node_map)
+                for name in names:
+                    np.testing.assert_array_equal(
+                        out.get_array(name), ref.get_array(name)
+                    )
+
+                node_order = tecio.match_nodes(out.get_array(["x", "y", "z"]), got_xyz)
+                assert node_order is not None
+                assert (
+                    tecio.match_cells([out.node_map], [got.node_map], node_order)
+                    is not None
+                )
+                for name in names:
+                    np.testing.assert_array_equal(
+                        got.get_array(name)[node_order], out.get_array(name)
+                    )
+
+    def test_merge_grid_reorders_cell_centered_data(self, tmp_path: Path) -> None:
+        """Cell-centered variables follow the cells, nodal ones follow the nodes.
+
+        Demonstrates:
+        - A shuffled copy of a two-brick zone shares its grid with the first zone
+        - Its nodal variable and its cell-centered variable come out in the order of
+          the first zone
+        """
+        x, y, z, nodes, _ = create_fe_two_bricks()
+        x, y, z = (a.astype(np.float64) for a in (x, y, z))
+        pressure = np.arange(len(x)) * 1.5
+        flux = np.array([10.0, 20.0])
+        (sx, sy, sz), (snodes,), perm, cell_perm = scramble_zone(
+            [x, y, z], [nodes], seed=0
+        )
+        assert cell_perm.tolist() == [1, 0]  # both orders really change
+
+        sources = []
+        for name, data, node_map in (
+            ("first", [x, y, z, pressure, flux], nodes),
+            ("shuffled", [sx, sy, sz, pressure[perm], flux[cell_perm]], snodes),
+        ):
+            sources.append(tmp_path / f"{name}.plt")
+            with tecio.open(str(sources[-1]), "w") as w:
+                w.write_fe_zone(
+                    zone_type=ZoneType.FEBRICK,
+                    data=data,
+                    node_map=node_map,
+                    variables=["x", "y", "z", "p", "c"],
+                    value_locations=[ValueLocation.NODAL] * 4
+                    + [ValueLocation.CELL_CENTERED],
+                )
+        dst = tmp_path / "merged.plt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), *map(str, sources)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            first, second = r.zones
+            assert second.shared_connectivity == 0
+            np.testing.assert_array_equal(second.node_map, first.node_map)
+            np.testing.assert_array_equal(second.get_array("x"), x)
+            np.testing.assert_array_equal(second.get_array("p"), pressure)
+            np.testing.assert_array_equal(second.get_array("c"), flux)
+            assert second.variables["c"].value_location == ValueLocation.CELL_CENTERED
+
+    def test_merge_grid_shares_only_equal_grids(self, tmp_path: Path) -> None:
+        """A zone shares its grid with the first earlier zone that has the same one.
+
+        Demonstrates:
+        - Zones with the same node and cell counts but another coordinate, another
+          cell or a moved node write their own grid
+        - Each zone is compared with every earlier grid of its size, so a repeat of
+          the second grid shares from the second zone, not the first
+        - Coordinates that differ by rounding only still match
+        - A zone stored in another order is compared after being put in the order of
+          the earlier zone, so a node or cell that differs there is still found
+        """
+        x, y, z, nodes, _ = create_fe_two_bricks()
+        x, y, z = (a.astype(np.float64) for a in (x, y, z))
+        moved = z.copy()
+        moved[5] = 0.5
+        other_cell = nodes.copy()
+        other_cell[1, 7] = 7
+        # Stored in another order, but one node or one cell still differs
+        (ax, ay, az), (anodes,), _, _ = scramble_zone(
+            [x, y, np.where(np.arange(len(z)) == 5, 0.25, z)], [nodes], seed=1
+        )
+        different_cell = nodes.copy()
+        different_cell[1, 7] = 3
+        (bx, by, bz), (bnodes,), _, _ = scramble_zone(
+            [x, y, z], [different_cell], seed=1
+        )
+        cases = [  # coordinates, node map, zone this one shares with
+            ([x, y, z], nodes, None),
+            ([2.0 * x, y, z], nodes, None),
+            ([2.0 * x, y, z], nodes, 1),
+            ([x, y, z], other_cell, None),
+            ([x, y, moved], nodes, None),
+            ([x + 1e-12, y, z], nodes, 0),
+            ([x, y, z], nodes, 0),
+            ([ax, ay, az], anodes, None),
+            ([bx, by, bz], bnodes, None),
+        ]
+        sources = []
+        for k, (coords, node_map, _) in enumerate(cases):
+            sources.append(tmp_path / f"case_{k}.plt")
+            with tecio.open(str(sources[-1]), "w") as w:
+                w.write_fe_zone(
+                    zone_type=ZoneType.FEBRICK,
+                    data=[*coords, np.arange(len(x)) + 100.0 * k],
+                    node_map=node_map,
+                    variables=["x", "y", "z", "p"],
+                )
+        dst = tmp_path / "merged.plt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), *map(str, sources)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            for k, (zone, (coords, node_map, shares)) in enumerate(
+                zip(r.zones, cases, strict=True)
+            ):
+                assert zone.shared_connectivity == shares
+                assert zone.variables["x"].shared_zone == shares
+                assert zone.variables["p"].shared_zone is None
+                np.testing.assert_array_equal(
+                    zone.get_array("p"), np.arange(len(x)) + 100.0 * k
+                )
+                expected = r.zones[shares] if shares is not None else zone
+                np.testing.assert_array_equal(zone.node_map, expected.node_map)
+                if shares is None:
+                    np.testing.assert_array_equal(zone.get_array("x"), coords[0])
+                    np.testing.assert_array_equal(zone.node_map, node_map)
+
+    def test_merge_grid_does_not_reorder_face_neighbors(self, tmp_path: Path) -> None:
+        """A zone with face neighbors shares its grid only if stored in the same order.
+
+        Its connections name its cells, so reordering the cells would invalidate them.
+        """
+        x, y, z, nodes, neighbors = create_fe_two_bricks()
+        (sx, sy, sz), (snodes,), perm, cell_perm = scramble_zone(
+            [x, y, z], [nodes], seed=0
+        )
+        inverse = np.argsort(cell_perm)
+        shuffled_neighbors = np.column_stack([
+            inverse[neighbors[:, 0]], neighbors[:, 1], inverse[neighbors[:, 2]]
+        ])  # fmt: skip
+        sources = []
+        for name, coords, node_map, connections in (
+            ("first", (x, y, z), nodes, neighbors),
+            ("shuffled", (sx, sy, sz), snodes, shuffled_neighbors),
+            ("copy", (x, y, z), nodes, neighbors),
+        ):
+            sources.append(tmp_path / f"{name}.plt")
+            with tecio.open(str(sources[-1]), "w") as w:
+                w.write_fe_zone(
+                    zone_type=ZoneType.FEBRICK,
+                    data=[*(a.astype(np.float64) for a in coords), np.arange(12.0)],
+                    node_map=node_map,
+                    variables=["x", "y", "z", "p"],
+                    face_neighbors=connections,
+                )
+        dst = tmp_path / "merged.plt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), *map(str, sources)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            assert [zone.shared_connectivity for zone in r.zones] == [None, None, 0]
+
+    def test_merge_grid_ordered_zones_need_equal_coordinates(
+        self, tmp_path: Path
+    ) -> None:
+        """Ordered zones share coordinates only when they are equal, never reordered."""
+        x, y, z = create_ordered((3, 4, 5))
+        cases = [(x, None), (x, 0), (2.0 * x, None), (x[::-1], None)]
+        sources = []
+        for k, (xs, _) in enumerate(cases):
+            sources.append(tmp_path / f"ordered_{k}.plt")
+            with tecio.open(str(sources[-1]), "w") as w:
+                w.write_ordered_zone(
+                    data=[xs, y, z, xs + k], variables=["x", "y", "z", "c"]
+                )
+        dst = tmp_path / "merged.plt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), *map(str, sources)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            for k, (zone, (xs, shares)) in enumerate(zip(r.zones, cases, strict=True)):
+                assert zone.variables["x"].shared_zone == shares
+                np.testing.assert_array_equal(
+                    zone.get_array("x"), xs if shares is None else x
+                )
+                np.testing.assert_array_equal(zone.get_array("c"), xs + k)
+
+    def test_merge_grid_needs_every_grid_variable(self, tmp_path: Path) -> None:
+        """A zone without a usable grid variable neither shares nor is shared from.
+
+        Demonstrates:
+        - A grid variable missing from the file, or passive in the zone, means the grid
+          cannot be compared, so the zone writes what it has
+        - A later zone with every grid variable still shares from the first zone
+        """
+        x, y, z = create_ordered((3, 4, 5))
+        cases = [  # variables, passive variables, zone this one shares with
+            (["x", "y", "z", "c"], set(), None),
+            (["x", "y", "c"], set(), None),
+            (["x", "y", "z", "c"], {"z"}, None),
+            (["x", "y", "z", "c"], set(), 0),
+        ]
+        grid = {"x": x, "y": y, "z": z, "c": x + y}
+        sources = []
+        for k, (names, passive, _) in enumerate(cases):
+            sources.append(tmp_path / f"ordered_{k}.plt")
+            with tecio.open(str(sources[-1]), "w") as w:
+                w.write_ordered_zone(
+                    data=[grid[n] for n in names if n not in passive],
+                    variables=names,
+                    passive_vars=passive,
+                )
+        dst = tmp_path / "merged.plt"
+
+        assert tecmerge(["--merge-grid", "-o", str(dst), *map(str, sources)]) == 0
+
+        with tecio.open(str(dst), "r") as r:
+            for zone, (_, _, shares) in zip(r.zones, cases, strict=True):
+                assert zone.variables["x"].shared_zone == shares
+            assert r.zones[1].variables["z"].is_passive()
+            assert r.zones[2].variables["z"].is_passive()
+            np.testing.assert_array_equal(r.zones[3].get_array("z"), z)
 
 
 # ======================================================================================

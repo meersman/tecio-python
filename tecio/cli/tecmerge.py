@@ -78,19 +78,27 @@ duplicated in every merged zone.
 
     ``--merge-grid [LIST]``
         Detect and share grid data (coordinate variables, and for FE zones,
-        connectivity) across zones with matching zone type and dimensions, instead of
-        writing it fresh in every merged zone. Zones are compared by a ``(zone_type,
-        num_nodes, num_elements)`` signature; the first zone with a given signature (in
-        file, then zone, order) writes its grid fresh, and every later zone with a
-        matching signature, whether from the same file or a different one, shares from
-        it instead. This is not a rigorous check that the underlying data is actually
-        identical, just that it plausibly could be, a false match (e.g. two genuinely
-        different blocks that happen to share dimensions) would silently share the wrong
-        grid. Polygon and polyhedron zones are matched on a hash of their full face map
-        for simplicity. Poly zones with boundary face connections cannot be shared
-        because boundary connections must be uniquely defined. If a zone only contains
-        grid or passive variables, it cannot be merged because there would be no active
-        data in the zone.
+        connectivity) across zones with the same grid, instead of writing it fresh in
+        every merged zone. Zones are first grouped by a ``(zone_type, num_nodes,
+        num_elements)`` signature, then compared with every earlier zone of the group
+        that wrote its grid. A zone shares from the first one with the same grid and
+        writes its own grid if there is none, so blocks that only share their size are
+        never mixed up. Grid variables stored in the same order are equal when they
+        agree to within 1e-8 of their largest absolute value, which allows for text
+        files rounding their values.
+
+        FE zones whose nodes or cells are stored in another order, for example the same
+        mesh in a PLT and an SZPLT file, share the grid of the earlier zone too. Their
+        nodal and cell-centered variables are put in the order of that zone as they are
+        written. This needs coordinates that are exactly equal, and is not done for a
+        zone with face neighbor connections, which refer to its cells. Ordered zones
+        must match in their stored order. Polygon and polyhedron zones are matched on a
+        hash of their full face map and must also have the same grid variables. Poly
+        zones with boundary face connections cannot be shared because boundary
+        connections must be uniquely defined. A zone whose grid variables are missing
+        or passive can neither share nor be shared from. If a zone only contains grid
+        or passive variables, it cannot be merged because there would be no active data
+        in the zone.
 
         Given with no value, grid variables are found automatically by name (``x``,
         ``X``, ``x-coordinate``, ``xgrid``, and similar common names for X/Y/Z). Given a
@@ -166,9 +174,10 @@ import glob
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
+import numpy.typing as npt
 
 from .. import (
     TecplotFEMixedZoneReader,
@@ -179,6 +188,9 @@ from .. import (
     TecplotSzlWriter,
     TecplotWriter,
     TecplotZoneReader,
+    ValueLocation,
+    match_cells,
+    match_nodes,
 )
 from .. import open as tecio_open
 from .._writer import poly_face_kwargs
@@ -332,7 +344,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="LIST",
         help=(
             "Detect and share the grid (coordinate variables, and connectivity for FE "
-            "zones) with matching zone type and dimensions. To manually specify grid "
+            "zones) of zones that have the same grid, even if an FE zone stores its "
+            "nodes and cells in another order. To manually specify grid "
             "coordinates provide a comma-separated list of 1-based indices or exact "
             "variable names (e.g.  -merge-grid x,y,z or -merge-grid 1,2,3)."
         ),
@@ -568,6 +581,138 @@ def _build_var_union(
     return union_vars, index_maps
 
 
+# Grids stored in the same order are equal when no coordinate differs by more than this
+# fraction of the largest absolute value of the variable. Text files round their values.
+_GRID_RTOL = 1e-8
+
+
+class _Grid(NamedTuple):
+    """The grid variables of one zone, as read for comparing grids."""
+
+    locals: list[int]
+    arrays: list[npt.NDArray[Any]]
+    bounds: tuple[Any, ...]
+
+
+class _GridSource(NamedTuple):
+    """A zone already written with its own grid that later zones may share."""
+
+    output_zone: int
+    zone: TecplotZoneReader
+    locals: list[int]
+    bounds: tuple[Any, ...]
+
+
+class _GridMatch(NamedTuple):
+    """How the grid of a zone is ordered relative to a :class:`_GridSource`.
+
+    ``None`` means the order is the same. Otherwise ``values[order]`` puts a nodal or
+    cell-centered array of the zone in the order of the source.
+    """
+
+    node_order: npt.NDArray[np.intp] | None
+    cell_order: npt.NDArray[np.intp] | None
+
+
+def _read_grid(
+    zone: TecplotZoneReader,
+    local_index_map: list[int | None],
+    grid_var_indices: set[int],
+) -> _Grid | None:
+    """Read the grid variables of *zone* so that its grid can be compared.
+
+    Returns:
+        The local variable indices, the values and their ``(min, max)`` bounds, or
+        ``None`` if a grid variable is missing, passive or not nodal, so that the zone
+        has no grid to compare.
+    """
+    locals_: list[int] = []
+    arrays: list[npt.NDArray[Any]] = []
+    bounds: list[Any] = []
+    for union_i, local_idx in enumerate(local_index_map, start=1):
+        if union_i not in grid_var_indices:
+            continue
+        if local_idx is None:
+            return None
+        var = zone.variables[local_idx]
+        values = None if var.is_passive() else var.values
+        if values is None or var.value_location != ValueLocation.NODAL:
+            return None
+        locals_.append(local_idx)
+        arrays.append(values)
+        bounds.append(
+            (float(values.min()), float(values.max())) if values.size else None
+        )
+    return _Grid(locals_, arrays, tuple(bounds))
+
+
+def _match_grid(
+    source: _GridSource, zone: TecplotZoneReader, grid: _Grid
+) -> _GridMatch | None:
+    """Check that *zone* has the grid of *source*, in the same order or another.
+
+    Grid variables stored in the same order are equal when they agree to within
+    ``_GRID_RTOL``. For a classic FE zone the node maps must also describe the same
+    cells. When the nodes or cells are in another order, the orders are found with
+    :func:`~tecio.match_nodes` and :func:`~tecio.match_cells`, which need coordinates
+    that are exactly equal. Ordered and poly zones are not reordered because their
+    structure fixes the order, and neither is a zone with face neighbor connections,
+    which refer to its cells.
+
+    Returns:
+        How to reorder the data of *zone* to share the grid, or ``None`` if the grids
+        differ and cannot be shared.
+    """
+    tolerances = [
+        _GRID_RTOL * max(abs(b[0]), abs(b[1])) if b is not None else 0.0
+        for b in source.bounds
+    ]
+    for ref_bounds, bounds, tol in zip(
+        source.bounds, grid.bounds, tolerances, strict=True
+    ):
+        if ref_bounds != bounds and (
+            ref_bounds is None
+            or bounds is None
+            or any(abs(r - g) > tol for r, g in zip(ref_bounds, bounds, strict=True))
+        ):
+            return None
+    ref_arrays = [source.zone.variables[i].values for i in source.locals]
+    ref_map = got_map = None
+    reorderable = False
+    if isinstance(zone, TecplotFEZoneReader) and isinstance(
+        source.zone, TecplotFEZoneReader
+    ):
+        ref_map, got_map = source.zone.node_map, zone.node_map
+        reorderable = (
+            zone.face_neighbor_mode is None
+            and ref_map is not None
+            and got_map is not None
+        )
+    same_nodes = all(
+        np.allclose(g, r, rtol=0.0, atol=tol)
+        for r, g, tol in zip(ref_arrays, grid.arrays, tolerances, strict=True)
+    )
+    if same_nodes and (ref_map is None or np.array_equal(ref_map, got_map)):
+        return _GridMatch(None, None)
+    if not reorderable or ref_map is None or got_map is None:
+        return None
+
+    node_order = None
+    if ref_arrays and not same_nodes:
+        node_order = match_nodes(ref_arrays, grid.arrays)
+        if node_order is None:
+            return None
+    cell_order = match_cells([ref_map], [got_map], node_order)
+    if cell_order is None:
+        return None
+    # Orders that leave everything where it is need no reordering of the data
+    identity = [
+        None if o is None or np.array_equal(o, np.arange(len(o))) else o
+        for o in (node_order, cell_order)
+    ]
+    return _GridMatch(*identity)
+
+
 def _has_own_data(
     zone: TecplotZoneReader,
     local_index_map: list[int | None],
@@ -597,6 +742,7 @@ def _write_zone(
     source_path: Path,
     grid_var_indices: set[int] | None,
     grid_reference: int | None,
+    grid_match: _GridMatch | None = None,
 ) -> None:
     """Write one zone to *writer* using the reconciled variable list.
 
@@ -620,11 +766,14 @@ def _write_zone(
                           or ``None`` if the feature is off.
         grid_reference:   1-based output zone index to share this zone's grid variables
                           (and, for FE zones, connectivity) from, if an earlier zone
-                          with a matching (zone_type, num_nodes, num_elements) signature
-                          was already written, else ``None`` (this zone's grid is
-                          written fresh; the caller is responsible for registering its
-                          signature afterward). Ignored entirely when *grid_var_indices*
-                          is ``None``.
+                          with the same grid was already written, else ``None`` (this
+                          zone's grid is written fresh; the caller is responsible for
+                          registering it afterward). Ignored entirely when
+                          *grid_var_indices* is ``None``.
+        grid_match:       How the grid of this zone is ordered relative to the zone of
+                          *grid_reference*. The nodal and cell-centered variables
+                          written for this zone are put in the order of that zone.
+                          ``None`` leaves them as they are.
     """
     zt = zone.zone_type
 
@@ -638,8 +787,8 @@ def _write_zone(
         is_grid_var = grid_var_indices is not None and union_i in grid_var_indices
 
         if is_grid_var and grid_reference is not None:
-            # An earlier zone with the same zone_type/num_nodes/num_elements already
-            # wrote this grid so share rather than duplicate
+            # An earlier zone with the same grid already wrote it so share rather than
+            # duplicate
             var_sharing[name] = grid_reference
             continue
 
@@ -667,6 +816,11 @@ def _write_zone(
         if arr is None or arr.size == 0:
             passive_vars.add(name)
         else:
+            if grid_match is not None:
+                is_cell = var.value_location == ValueLocation.CELL_CENTERED
+                order = grid_match.cell_order if is_cell else grid_match.node_order
+                if order is not None:
+                    arr = arr[order]
             data.append(arr)
             value_locations.append(var.value_location)
 
@@ -712,9 +866,8 @@ def _write_zone(
         )
     elif isinstance(zone, TecplotFEZoneReader):
         if grid_var_indices is not None and grid_reference is not None:
-            # Share connectivity from the same reference zone as the grid variables, a
-            # matching (zone_type, num_nodes, num_elements) signature implies the same
-            # mesh, node map included.
+            # Share connectivity from the same reference zone as the grid variables,
+            # its node map describes the same cells.
             con_remapped = grid_reference
         else:
             con_src = zone.shared_connectivity
@@ -876,8 +1029,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 writer.add_auxvar_dict(auxvar)
 
             total_zones = 0
-            # Persists sharing registry across every input file for merge grid option
-            signature_registry: dict[tuple[Any, ...], int] = {}
+            # Persists across every input file for merge grid option: the zones that
+            # wrote a grid, by (zone_type, num_nodes, num_elements) or face map hash
+            grid_registry: dict[tuple[Any, ...], list[_GridSource]] = {}
             for fi, (reader, imap) in enumerate(zip(readers, index_maps, strict=False)):
                 sol_time = times[fi] if times is not None else None
 
@@ -901,7 +1055,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         s_id = zone_num + args.strand_offset
 
                     grid_reference: int | None = None
+                    grid_match: _GridMatch | None = None
                     signature: tuple[Any, ...] | None = None
+                    grid: _Grid | None = None
                     if grid_var_indices is not None:
                         if isinstance(
                             zone, (TecplotOrderedZoneReader, TecplotFEZoneReader)
@@ -916,14 +1072,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                             # sources, so they always write their own grid.
                             signature = (zt, zone._face_map_digest())
                         if signature is not None:
-                            grid_reference = signature_registry.get(signature)
+                            grid = _read_grid(zone, imap, grid_var_indices)
+                        if grid is None:
+                            signature = None  # no grid to compare, none to share
+                        else:
+                            # Zones with the same signature are compared grid for grid
+                            for source in grid_registry.get(signature, ()):
+                                grid_match = _match_grid(source, zone, grid)
+                                if grid_match is not None:
+                                    grid_reference = source.output_zone
+                                    break
 
                     # A zone that would hold no data of its own is skipped by the
                     # writer, so write its grid fresh rather than lose the zone.
                     if grid_reference is not None and not _has_own_data(
                         zone, imap, grid_var_indices
                     ):
-                        grid_reference = None
+                        grid_reference = grid_match = None
 
                     zones_before = writer.current_zone
                     _write_zone(
@@ -937,15 +1102,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                         source_path=input_paths[fi],
                         grid_var_indices=grid_var_indices,
                         grid_reference=grid_reference,
+                        grid_match=grid_match,
                     )
                     if writer.current_zone == zones_before:
                         continue  # skipped as empty, nothing to map or register
                     zone_index_map[zi] = writer.current_zone
-                    if signature is not None and grid_reference is None:
-                        # First zone with this signature should write grid, every later
-                        # zone with a matching signature shares from it
-                        signature_registry[signature] = writer.current_zone
+                    if (
+                        signature is not None
+                        and grid is not None
+                        and not grid_reference
+                    ):
+                        # A zone that wrote its grid is a source for later zones with
+                        # the same grid
+                        grid_registry.setdefault(signature, []).append(
+                            _GridSource(
+                                writer.current_zone, zone, grid.locals, grid.bounds
+                            )
+                        )
                     total_zones += 1
+                    grid = None
 
         # Close all readers
         for reader in readers:
