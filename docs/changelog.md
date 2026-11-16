@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tectable` console script converts a delimited text table to Tecplot zones
+  with additional flags for filtering or grouping like data into zones.
+
 ---
 
 ```{include} changelog/v0.4.2.md

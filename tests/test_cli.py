@@ -33,8 +33,10 @@ Test files required in ``tests/``:
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,7 @@ from tecio.cli.teconvert import main as teconvert
 from tecio.cli.tecscale import main as tecscale
 from tecio.cli.tecslice import main as tecslice
 from tecio.cli.tecstats import main as tecstats
+from tecio.cli.tectable import main as tectable
 
 try:
     import scipy.io as sio
@@ -1815,6 +1818,783 @@ class TestTecstats:
     def test_missing_input_returns_1(self, tmp_path: Path) -> None:
         """Non-existent source file returns exit code 1."""
         assert tecstats([str(tmp_path / "ghost.szplt")]) == 1
+
+
+# ======================================================================================
+# tectable
+# ======================================================================================
+
+
+def _read_ordered_zones(path: Path) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read every zone of a file written by tectable.
+
+    Returns:
+        The variable names and, per zone, its title, zone type, aux data and the values
+        of each variable as a 1-D array.
+    """
+    with tecio.open(str(path), "r") as reader:
+        names = list(reader.variables)
+        zones = [
+            {
+                "title": zone.title,
+                "type": zone.zone_type,
+                "aux": dict(zone.auxdata.items()),
+                "data": {n: zone.get_array(n).ravel() for n in names},
+            }
+            for zone in reader.zones
+        ]
+    return names, zones
+
+
+class TestTectable:
+    """Tests for tectable - converts delimited text tables to ordered zones."""
+
+    @pytest.mark.parametrize("fmt", _FORMATS)
+    def test_comma_table_with_header_becomes_one_zone(
+        self, tmp_path: Path, fmt: str
+    ) -> None:
+        """A CSV file with a header row becomes one ordered zone in any format.
+
+        Demonstrates:
+        - The delimiter and the header row are detected
+        - Each numeric column is a variable, with the values as written in the table
+        - The output is named by ``-o``, and the dataset title is the input name
+        """
+        src = tmp_path / "results.csv"
+        src.write_text("x, y, p\n0, 0.1, 1.5\n1, 0.2, 2.5\n2, 0.3, 1e-20\n")
+        dst = tmp_path / f"results.{fmt}"
+
+        assert tectable([str(src), "-o", str(dst)]) == 0
+
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["x", "y", "p"]
+        assert len(zones) == 1
+        assert zones[0]["type"] == ZoneType.ORDERED
+        assert zones[0]["aux"] == {}
+        np.testing.assert_array_equal(zones[0]["data"]["x"], [0.0, 1.0, 2.0])
+        np.testing.assert_allclose(zones[0]["data"]["y"], [0.1, 0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(zones[0]["data"]["p"], [1.5, 2.5, 1e-20], rtol=1e-6)
+        with tecio.open(str(dst), "r") as reader:
+            assert reader.title == "results"
+
+    def test_default_output_name_is_next_to_the_input(self, tmp_path: Path) -> None:
+        """Without -o the output is the input path with the extension .szplt."""
+        src = tmp_path / "table.txt"
+        src.write_text("a b\n1 2\n3 4\n")
+
+        assert tectable([str(src)]) == 0
+
+        names, zones = _read_ordered_zones(tmp_path / "table.szplt")
+        assert names == ["a", "b"]
+        np.testing.assert_array_equal(zones[0]["data"]["b"], [2.0, 4.0])
+
+    @pytest.mark.parametrize(
+        ("delimiter", "text"),
+        [
+            ("auto", "x   y\tp\n1   2\t3\n4   5\t6\n"),
+            ("space", "x y p\n1 2 3\n4 5 6\n"),
+            ("tab", "x\ty\tp\n1\t2\t3\n4\t5\t6\n"),
+            (";", "x;y;p\n1;2;3\n4;5;6\n"),
+            ("comma", "x,y,p\n1,2,3\n4,5,6\n"),
+        ],
+    )
+    def test_delimiters(self, tmp_path: Path, delimiter: str, text: str) -> None:
+        """Whitespace, comma, tab and any single character separate the columns."""
+        src = tmp_path / "table.txt"
+        src.write_text(text)
+        dst = tmp_path / "table.szplt"
+
+        assert tectable(["-d", delimiter, str(src), "-o", str(dst)]) == 0
+
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["x", "y", "p"]
+        np.testing.assert_array_equal(zones[0]["data"]["p"], [3.0, 6.0])
+
+    def test_names_and_header_options(self, tmp_path: Path) -> None:
+        """Names come from the header, from -n, or default to V1, V2, ...
+
+        Demonstrates:
+        - A table of numbers has no header, comment and blank lines are ignored
+        - ``--header yes`` takes the first line as names even if it is numeric
+        - ``-n`` names the columns and keeps the first line as data
+        - Empty and repeated header names are made unique
+        """
+        src = tmp_path / "table.txt"
+        src.write_text("# solver output\n\n1 2\n3 4  # trailing comment\n")
+        dst = tmp_path / "table.szplt"
+
+        assert tectable([str(src), "-o", str(dst)]) == 0
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["V1", "V2"]
+        np.testing.assert_array_equal(zones[0]["data"]["V1"], [1.0, 3.0])
+
+        assert tectable(["--header", "yes", str(src), "-o", str(dst), "-f"]) == 0
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["1", "2"]
+        np.testing.assert_array_equal(zones[0]["data"]["1"], [3.0])
+
+        assert tectable(["-n", "a, b", str(src), "-o", str(dst), "-f"]) == 0
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["a", "b"]
+        np.testing.assert_array_equal(zones[0]["data"]["a"], [1.0, 3.0])
+
+        dup = tmp_path / "dup.csv"
+        dup.write_text("v,,v\n1,2,3\n")
+        assert tectable([str(dup), "-o", str(dst), "-f"]) == 0
+        assert _read_ordered_zones(dst)[0] == ["v", "V2", "v_2"]
+
+        # Comments can be turned off, which makes the first line text
+        assert tectable(["--comment", "", str(src), "-o", str(dst), "-f"]) == 1
+
+    def test_group_column_splits_the_table_into_zones(self, tmp_path: Path) -> None:
+        """One zone per category, named and tagged with the category.
+
+        Demonstrates:
+        - ``-g`` takes a column name exactly as in the header, which may hold spaces
+        - The group column is not a variable, its value is zone aux data and title
+        - Rows keep their order within a zone
+        """
+        src = tmp_path / "table.csv"
+        src.write_text("Catagory, val\nA, 0\nA, 1\nA, 2\nB, 3\nB, 6\nC, 1\n")
+        dst = tmp_path / "table.szplt"
+
+        assert tectable(["-g", "Catagory", str(src), "-o", str(dst), "-f"]) == 0
+
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["val"]
+        assert [z["title"] for z in zones] == ["Catagory=A", "Catagory=B", "Catagory=C"]
+        assert [z["aux"] for z in zones] == [
+            {"Catagory": "A"},
+            {"Catagory": "B"},
+            {"Catagory": "C"},
+        ]
+        assert [z["data"]["val"].tolist() for z in zones] == [
+            [0.0, 1.0, 2.0],
+            [3.0, 6.0],
+            [1.0],
+        ]
+
+        spaced = tmp_path / "spaced.csv"
+        spaced.write_text("Test case,val\nx,1\ny,2\n")
+        assert tectable(["-g", "Test case", str(spaced), "-o", str(dst), "-f"]) == 0
+        _, zones = _read_ordered_zones(dst)
+        assert zones[1]["title"] == "Test case=y"
+        assert zones[1]["aux"] == {"Test_case": "y"}  # aux names have no spaces
+
+    def test_nested_groups_and_zone_order(self, tmp_path: Path) -> None:
+        """Several -g columns nest, and the zone order can be reversed or as read.
+
+        Demonstrates:
+        - Zones are sorted by the first group, then the second, numerically for
+          numbers and alphabetically for text
+        - ``-r`` reverses the order, ``--no-sort`` keeps the first appearance
+        - Numeric group columns are dropped unless ``--keep-group`` is given
+        """
+        src = tmp_path / "runs.csv"
+        src.write_text("Case,Step,val\nb,10,1\na,2,2\nb,2,3\na,10,4\nb,10,5\na,2,6\n")
+        dst = tmp_path / "runs.szplt"
+
+        def titles(*options: str) -> list[str]:
+            assert tectable(["-g", "Case", "-g", "Step", *options, str(src),
+                             "-o", str(dst), "-f"]) == 0  # fmt: skip
+            return [z["title"] for z in _read_ordered_zones(dst)[1]]
+
+        ascending = [
+            "Case=a, Step=2",
+            "Case=a, Step=10",
+            "Case=b, Step=2",
+            "Case=b, Step=10",
+        ]
+        assert titles() == ascending
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["val"]
+        assert zones[0]["aux"] == {"Case": "a", "Step": "2"}
+        assert zones[0]["data"]["val"].tolist() == [2.0, 6.0]
+        assert zones[3]["data"]["val"].tolist() == [1.0, 5.0]
+
+        assert titles("-r") == ascending[::-1]
+        assert titles("--no-sort") == [
+            "Case=b, Step=10",
+            "Case=a, Step=2",
+            "Case=b, Step=2",
+            "Case=a, Step=10",
+        ]
+
+        decimals = tmp_path / "decimals.csv"
+        decimals.write_text("t,val\n0.5,1\n1,2\n0.5,3\n")
+        assert tectable(["-g", "t", str(decimals), "-o", str(dst), "-f"]) == 0
+        assert [z["title"] for z in _read_ordered_zones(dst)[1]] == ["t=0.5", "t=1"]
+
+        titles("--keep-group")
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["Step", "val"]
+        assert zones[1]["data"]["Step"].tolist() == [10.0]
+
+    def test_text_columns_are_aux_data_or_skipped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A text column is zone aux data when constant in the zone, else skipped.
+
+        Demonstrates:
+        - A constant text column becomes ``column_header=column_text``
+        - A text column that varies is left out, with a note on standard error
+        - With groups, constancy is judged within each zone
+        - Quoted fields keep their commas, aux names are made safe, empty text is
+          not stored
+        """
+        src = tmp_path / "table.csv"
+        src.write_text(
+            "Run ID,note,site,empty,case,val\n"
+            'r1,"a, b",north,,x,1\nr1,"a, b",north,,x,2\n'
+            'r1,"a, b",south,,y,3\nr1,"a, b",south,,y,4\n'
+        )
+        dst = tmp_path / "table.szplt"
+
+        assert tectable([str(src), "-o", str(dst)]) == 0
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["val"]
+        assert zones[0]["aux"] == {"Run_ID": "r1", "note": "a, b"}
+        assert "site, case" in capsys.readouterr().err.replace(
+            "case, site", "site, case"
+        )
+
+        assert tectable(["-g", "site", str(src), "-o", str(dst), "-f"]) == 0
+        _, zones = _read_ordered_zones(dst)
+        assert zones[0]["aux"] == {
+            "site": "north",
+            "Run_ID": "r1",
+            "note": "a, b",
+            "case": "x",
+        }
+        assert zones[1]["aux"]["case"] == "y"
+        assert "Skipped" not in capsys.readouterr().err
+
+    def test_missing_values_and_fortran_exponents(self, tmp_path: Path) -> None:
+        """Empty fields and NA words read as NaN, and 1.5D+02 reads as 150."""
+        src = tmp_path / "table.csv"
+        src.write_text("a,b\n1,1.5D+02\n,2.5d1\nNA,N/A\nnull,none\n4,nan\n")
+        dst = tmp_path / "table.szplt"
+
+        assert tectable([str(src), "-o", str(dst)]) == 0
+
+        _, zones = _read_ordered_zones(dst)
+        np.testing.assert_array_equal(
+            zones[0]["data"]["a"], [1.0, np.nan, np.nan, np.nan, 4.0]
+        )
+        np.testing.assert_array_equal(
+            zones[0]["data"]["b"], [150.0, 25.0, np.nan, np.nan, np.nan]
+        )
+
+    def test_reads_standard_input(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A table piped in is converted like a file, as with awk.
+
+        Demonstrates:
+        - Standard input is read when the file is ``-`` or left out
+        - Without ``-o`` the output is ``table.szplt`` in the current directory
+        """
+        text = "x y label\n1 2 run1\n3 4 run1\n"
+        dst = tmp_path / "piped.plt"
+
+        for args in (["-o", str(dst), "-f"], ["-", "-o", str(dst), "-f"]):
+            monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+            assert tectable(args) == 0
+
+            names, zones = _read_ordered_zones(dst)
+            assert names == ["x", "y"]
+            assert zones[0]["aux"] == {"label": "run1"}
+            np.testing.assert_array_equal(zones[0]["data"]["y"], [2.0, 4.0])
+            with tecio.open(str(dst), "r") as reader:
+                assert reader.title == ""
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+        assert tectable([]) == 0
+        assert _read_ordered_zones(tmp_path / "table.szplt")[0] == ["x", "y"]
+        monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+        assert tectable([]) == 1  # table.szplt exists now
+
+        class Terminal(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        monkeypatch.setattr(sys, "stdin", Terminal(text))
+        assert tectable(["-o", str(dst), "-f"]) == 1  # nothing was piped
+
+    def test_table_larger_than_a_chunk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tables are parsed in chunks of rows without changing the result.
+
+        Demonstrates:
+        - Numeric, text and group columns are the same for chunks of 1, 4 and all rows
+        - The first line is the header even when the first chunk is a single row
+        """
+        rows = [(("a", "b", "c")[k % 3], f"tag{k % 2}", k * 0.5) for k in range(11)]
+        src = tmp_path / "table.csv"
+        src.write_text("g,tag,v\n" + "".join(f"{g},{t},{v}\n" for g, t, v in rows))
+        dst = tmp_path / "table.szplt"
+        results = []
+
+        for chunk in (1, 4, 1000):
+            monkeypatch.setattr("tecio.cli.tectable._CHUNK_ROWS", chunk)
+            assert tectable(["-g", "g", str(src), "-o", str(dst), "-f"]) == 0
+            results.append(_read_ordered_zones(dst))
+
+        names, zones = results[2]
+        assert names == ["v"]
+        assert [z["data"]["v"].tolist() for z in zones] == [
+            [k * 0.5 for k in range(11) if k % 3 == i] for i in range(3)
+        ]
+        assert [z["aux"] for z in zones] == [{"g": g} for g in "abc"]  # tag varies
+        for other in results[:2]:
+            assert other[0] == names
+            for got, want in zip(other[1], zones, strict=True):
+                assert got["aux"] == want["aux"]
+                np.testing.assert_array_equal(got["data"]["v"], want["data"]["v"])
+
+    _ALPHAS = (-4, 0, 4, 8)
+    _BETAS = (-2, 0, 2, 4, 6)
+    _MACHS = (0.5, 1.2)
+    _ALTS = (1000, 5000)
+
+    def _write_aero(self, path: Path, *, shuffle: bool = False) -> None:
+        """Write an aerodynamic database: CX = Alpha + 0.1 Beta, CY = Mach * Beta."""
+        rows = [
+            f"{m},{h},{a},{b},{a + 0.1 * b:.1f},{m * b:.2f},run7"
+            for m in self._MACHS
+            for h in self._ALTS
+            for a in self._ALPHAS
+            for b in self._BETAS
+        ]
+        if shuffle:
+            rows = rows[::-1]
+        path.write_text(
+            "Mach,Altitude,Alpha,Beta,CX,CY,Case\n" + "\n".join(rows) + "\n"
+        )
+
+    def test_families_of_curves_with_group_columns_as_aux_data(
+        self, tmp_path: Path
+    ) -> None:
+        """Group columns select the curves, and their values stay on each zone.
+
+        Demonstrates:
+        - ``-g Mach -g Altitude -g Beta`` gives one zone for each combination
+        - The variables are the remaining numeric columns
+        - Each zone has the group columns and their values as aux data and in its title
+        - Zones are ordered by Mach, then Altitude, then Beta
+        """
+        src = tmp_path / "aero.csv"
+        self._write_aero(src)
+        dst = tmp_path / "aero.szplt"
+
+        assert tectable(["-g", "Mach", "-g", "Altitude", "-g", "Beta", str(src),
+                         "-o", str(dst)]) == 0  # fmt: skip
+
+        names, zones = _read_ordered_zones(dst)
+        assert names == ["Alpha", "CX", "CY"]
+        assert len(zones) == 20
+        assert zones[0]["title"] == "Mach=0.5, Altitude=1000, Beta=-2"
+        assert zones[0]["aux"] == {
+            "Mach": "0.5",
+            "Altitude": "1000",
+            "Beta": "-2",
+            "Case": "run7",
+        }
+        assert zones[-1]["aux"]["Mach"] == "1.2"
+        assert zones[-1]["aux"]["Altitude"] == "5000"
+        assert zones[-1]["aux"]["Beta"] == "6"
+        np.testing.assert_array_equal(zones[0]["data"]["Alpha"], self._ALPHAS)
+        np.testing.assert_allclose(
+            zones[0]["data"]["CX"], np.array(self._ALPHAS) - 0.2, rtol=1e-6
+        )
+        np.testing.assert_allclose(zones[-1]["data"]["CY"], [7.2] * 4, rtol=1e-6)
+
+    @pytest.mark.parametrize("shuffle", [False, True])
+    def test_mesh_makes_surfaces_over_two_columns(
+        self, tmp_path: Path, shuffle: bool
+    ) -> None:
+        """``-m`` turns the rows of each zone into an IJ grid, in any row order.
+
+        Demonstrates:
+        - ``-g Mach -g Altitude -m Alpha -m Beta`` gives a surface per Mach and
+          Altitude, with Alpha along I and Beta along J
+        - The mesh columns stay variables, the group columns are aux data
+        - A third ``-m`` column makes an IJK zone
+        """
+        src = tmp_path / "aero.csv"
+        self._write_aero(src, shuffle=shuffle)
+        dst = tmp_path / "aero.szplt"
+        alpha = np.array(self._ALPHAS, dtype=float)[:, None]
+        beta = np.array(self._BETAS, dtype=float)[None, :]
+
+        assert tectable(["-g", "Mach", "-g", "Altitude", "-m", "Alpha", "-m", "Beta",
+                         str(src), "-o", str(dst)]) == 0  # fmt: skip
+
+        with tecio.open(str(dst), "r") as reader:
+            assert list(reader.variables) == ["Alpha", "Beta", "CX", "CY"]
+            assert reader.num_zones == 4
+            zone = reader.zones[3]
+            assert dict(zone.auxdata.items()) == {
+                "Mach": "1.2",
+                "Altitude": "5000",
+                "Case": "run7",
+            }
+            assert zone.get_array("CX").shape == (4, 5, 1)
+            np.testing.assert_array_equal(
+                zone.get_array("Alpha")[:, :, 0], alpha + 0 * beta
+            )
+            np.testing.assert_array_equal(
+                zone.get_array("Beta")[:, :, 0], beta + 0 * alpha
+            )
+            np.testing.assert_allclose(
+                zone.get_array("CX")[:, :, 0], alpha + 0.1 * beta, rtol=1e-6
+            )
+            np.testing.assert_allclose(
+                zone.get_array("CY")[:, :, 0], 1.2 * beta + 0 * alpha, rtol=1e-6
+            )
+
+        assert tectable(["-g", "Altitude", "-m", "Alpha", "-m", "Beta", "-m", "Mach",
+                         str(src), "-o", str(dst), "-f"]) == 0  # fmt: skip
+        with tecio.open(str(dst), "r") as reader:
+            assert reader.num_zones == 2
+            mach = reader.zones[0].get_array("Mach")
+            assert mach.shape == (4, 5, 2)
+            np.testing.assert_allclose(mach[:, :, 1], 1.2, rtol=1e-6)
+
+    def test_mesh_must_be_a_complete_grid_in_every_zone(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A zone that is not each Alpha and Beta combination once is an error.
+
+        Demonstrates:
+        - A missing point and a repeated point are both found, with the zone named
+        - The mesh columns must be numeric, different, up to 3, and not group columns
+        - No partial output is left behind
+        """
+        dst = tmp_path / "out.szplt"
+
+        def run(text: str, *options: str) -> str:
+            src = tmp_path / "table.csv"
+            src.write_text(text)
+            assert tectable([*options, str(src), "-o", str(dst), "-f"]) == 1
+            assert not dst.exists()
+            return capsys.readouterr().err
+
+        grid = "g,a,b,v\n1,0,0,1\n1,1,0,2\n1,0,1,3\n1,1,1,4\n"
+        assert "zone 'g=2'" in run(grid + "2,0,0,1\n2,1,1,4\n", "-g", "g", "-m", "a",
+                                   "-m", "b")  # fmt: skip
+        assert "2 x 2 = 4 points" in run(grid.replace("1,1,0,2", "1,1,0,2\n1,1,0,2"),
+                                         "-m", "a", "-m", "b")  # fmt: skip
+        assert "repeated" in run("a,b,v\n0,0,1\n0,0,2\n1,0,3\n1,1,4\n", "-m", "a",
+                                 "-m", "b")  # fmt: skip
+        assert "missing" in run("a,v\n0,1\n,2\n", "-m", "a")
+        assert "numeric" in run("g,a,v\nx,1,1\n", "-m", "g")
+        assert "numeric" in run(grid, "-g", "a", "-m", "a")
+        assert "1 to 3" in run(grid, "-m", "a", "-m", "a")
+        assert "1 to 3" in run("a,b,c,d,v\n1,1,1,1,1\n", *["-m", "a", "-m", "b",
+                               "-m", "c", "-m", "d"])  # fmt: skip
+
+    def test_filters_keep_rows_that_satisfy_all_conditions(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``--filter`` drops rows before grouping, and several filters combine.
+
+        Demonstrates:
+        - The operators ``==``, ``!=``, ``<``, ``<=``, ``>`` and ``>=``
+        - Repeated filters must all hold, spaces around the operator are fine
+        - Text columns are compared with ``==`` and ``!=``, with an optional quote
+        - Names with spaces and operator characters are matched exactly
+        """
+        src = tmp_path / "aero.csv"
+        self._write_aero(src)
+        dst = tmp_path / "aero.szplt"
+        every = [
+            (m, h, a, b)
+            for m in self._MACHS
+            for h in self._ALTS
+            for a in self._ALPHAS
+            for b in self._BETAS
+        ]
+        cases = {
+            ("Alpha!=0",): lambda m, h, a, b: a != 0,
+            ("Beta<3",): lambda m, h, a, b: b < 3,
+            ("Mach>=1",): lambda m, h, a, b: m >= 1,
+            ("Beta<=0",): lambda m, h, a, b: b <= 0,
+            ("Altitude==1000",): lambda m, h, a, b: h == 1000,
+            ("Alpha > 0",): lambda m, h, a, b: a > 0,
+            ("Alpha!=0", "Beta<3", "Mach>=1"): lambda m, h, a, b: (
+                a != 0 and b < 3 and m >= 1
+            ),
+            ("Case==run7",): lambda m, h, a, b: True,
+            ('Case=="run7"',): lambda m, h, a, b: True,
+        }
+
+        for filters, keep in cases.items():
+            options = [f"--filter={f}" for f in filters]
+            assert tectable([*options, str(src), "-o", str(dst), "-f"]) == 0
+
+            names, zones = _read_ordered_zones(dst)
+            want = [row for row in every if keep(*row)]
+            np.testing.assert_array_equal(
+                zones[0]["data"]["Alpha"], [r[2] for r in want]
+            )
+            np.testing.assert_array_equal(
+                zones[0]["data"]["Beta"], [r[3] for r in want]
+            )
+        assert f"Kept {len(want)} of {len(every)} rows." in capsys.readouterr().out
+
+        assert tectable(["--filter", "Mach>=1", "-g", "Mach", str(src), "-o", str(dst),
+                         "-f"]) == 0  # fmt: skip
+        assert [z["title"] for z in _read_ordered_zones(dst)[1]] == ["Mach=1.2"]
+
+        odd = tmp_path / "odd.csv"
+        odd.write_text('Test case,a,a<b,v\n"x, y",1,5,10\nz,2,6,20\n"x, y",3,6,30\n')
+        for expr, kept in [
+            ("Test case==x, y", [10.0, 30.0]),
+            ('Test case=="x, y"', [10.0, 30.0]),
+            ("Test case != z", [10.0, 30.0]),
+            ("a<b==6", [20.0, 30.0]),
+            ("a<2.5", [10.0, 20.0]),
+        ]:
+            assert tectable(["--filter", expr, str(odd), "-o", str(dst), "-f"]) == 0
+            assert _read_ordered_zones(dst)[1][0]["data"]["v"].tolist() == kept
+
+        nan = tmp_path / "nan.csv"
+        nan.write_text("w,v\n1,1\n1,\n1,NA\n1,0\n")
+        for expr, count in [("v!=0", 3), ("v>0", 1), ("v==0", 1)]:
+            assert tectable(["--filter", expr, str(nan), "-o", str(dst), "-f"]) == 0
+            assert len(_read_ordered_zones(dst)[1][0]["data"]["v"]) == count
+
+        capsys.readouterr()
+
+        def bad(expr: str) -> str:
+            assert tectable(["--filter", expr, str(src), "-o", str(dst), "-f"]) == 1
+            return capsys.readouterr().err
+
+        assert "cannot read filter" in bad("Alpha")
+        assert "cannot read filter" in bad("alpha>1")  # case matters
+        assert "cannot read filter" in bad("Gamma>1")
+        assert "not a number" in bad("Alpha>x")
+        assert "only == and !=" in bad("Case<run7")
+        assert "no row satisfies" in bad("Alpha>100")
+        assert "no row satisfies" in bad("Case==other")
+
+    def test_precision_is_single_only_where_the_text_allows(
+        self, tmp_path: Path
+    ) -> None:
+        """Columns with at most 6 significant digits are stored in single precision.
+
+        Demonstrates:
+        - ``.szplt`` chooses per variable, ``.plt`` and ``.dat`` for the whole file
+        - A 7 digit value, a value outside the single range, or a value late in a
+          long column makes a column double
+        - Zero, NaN and infinity do not decide the precision
+        - ``--precision`` forces single or double
+        """
+        src = tmp_path / "table.csv"
+        src.write_text(
+            "a,b,c,d\n1.5,0.1234567,1e-40,0\n2.25,0.2,1,NA\n-100000,0.3,2,inf\n"
+        )
+        fits = tmp_path / "fits.csv"
+        fits.write_text("a,d\n1.5,0\n2.25,NA\n-999999,inf\n")
+
+        def dtypes(path: Path) -> dict[str, np.dtype]:
+            with tecio.open(str(path), "r") as reader:
+                return {n: reader.zones[0].get_array(n).dtype for n in reader.variables}
+
+        def convert(table: Path, suffix: str, *options: str) -> Path:
+            dst = tmp_path / f"out{suffix}"
+            assert tectable([*options, str(table), "-o", str(dst), "-f"]) == 0
+            return dst
+
+        f32, f64 = np.dtype(np.float32), np.dtype(np.float64)
+        assert dtypes(convert(src, ".szplt")) == {
+            "a": f32, "b": f64, "c": f64, "d": f32
+        }  # fmt: skip
+        assert set(
+            dtypes(convert(src, ".szplt", "--precision", "single")).values()
+        ) == {f32}
+        assert set(
+            dtypes(convert(src, ".szplt", "--precision", "double")).values()
+        ) == {f64}
+        assert set(dtypes(convert(src, ".plt")).values()) == {f64}
+        assert set(dtypes(convert(fits, ".plt")).values()) == {f32}
+        assert "SINGLE SINGLE" in convert(fits, ".dat").read_text()
+        assert "DOUBLE" in convert(src, ".dat").read_text()
+
+    def test_whole_number_columns_are_stored_as_the_smallest_integer(
+        self, tmp_path: Path
+    ) -> None:
+        """Columns of whole numbers become uint8, int16 or int32 variables.
+
+        Demonstrates:
+        - The smallest type that holds the column is used in ``.szplt`` files
+        - A column with a gap, a fraction or a value beyond int32 stays a float
+        - ``.dat`` files take integers below 1e9, and one precision for the rest
+        - ``.plt`` files have no integer variables
+        - ``--precision`` stores everything as floats
+        """
+        src = tmp_path / "table.csv"
+        src.write_text(
+            "u,s,i,big,huge,fl,gap\n"
+            "0,-4,70000,1234567890,10000000000,0.5,1\n"
+            "7,0,-5,5,5,1.5,NA\n"
+            "255,300,2147483647,6,6,2.5,3\n"
+        )
+        small = tmp_path / "small.csv"
+        small.write_text("u,s,fl\n0,-4,0.5\n7,0,1.5\n255,300,2.5\n")
+
+        def dtypes(path: Path) -> list[str]:
+            with tecio.open(str(path), "r") as reader:
+                return [
+                    reader.zones[0].get_array(n).dtype.str for n in reader.variables
+                ]
+
+        def convert(table: Path, suffix: str, *options: str) -> Path:
+            dst = tmp_path / f"out{suffix}"
+            assert tectable([*options, str(table), "-o", str(dst), "-f"]) == 0
+            return dst
+
+        szplt = convert(src, ".szplt")
+        assert dtypes(szplt) == ["|u1", "<i2", "<i4", "<i4", "<f4", "<f4", "<f4"]
+        _, zones = _read_ordered_zones(szplt)
+        assert zones[0]["data"]["i"].tolist() == [70000, -5, 2147483647]
+        assert zones[0]["data"]["s"].tolist() == [-4, 0, 300]
+
+        dat = convert(src, ".dat")
+        assert (
+            "DT=(BYTE SHORTINT DOUBLE DOUBLE DOUBLE DOUBLE DOUBLE)" in dat.read_text()
+        )
+        assert _read_ordered_zones(dat)[1][0]["data"]["i"].tolist() == [
+            70000.0,
+            -5.0,
+            2147483647.0,
+        ]
+        assert "DT=(BYTE SHORTINT SINGLE)" in convert(small, ".dat").read_text()
+
+        assert set(dtypes(convert(src, ".plt"))) == {"<f8"}
+        assert set(dtypes(convert(small, ".plt"))) == {"<f4"}
+        assert set(dtypes(convert(src, ".szplt", "--precision", "single"))) == {"<f4"}
+        assert set(dtypes(convert(src, ".szplt", "--precision", "double"))) == {"<f8"}
+
+    def test_precision_checks_every_block_of_a_long_column(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A late value that needs double precision is found after the first values.
+
+        Demonstrates:
+        - The first values and each following block of a column are checked
+        - Numeric chunks are read directly, and a later chunk with missing values or
+          text-like fields falls back to the slower text parse, with the same result
+        """
+        monkeypatch.setattr("tecio.cli.tectable._SAMPLE_ROWS", 2)
+        monkeypatch.setattr("tecio.cli.tectable._CHUNK_ROWS", 4)
+        rows = [(k * 0.25, 1 + k * 0.001) for k in range(11)]
+        src = tmp_path / "table.csv"
+        src.write_text("a,b\n" + "".join(f"{a},{b:.3f}\n" for a, b in rows))
+        late = tmp_path / "late.csv"
+        late.write_text("a,b\n" + "".join(f"{a},{b:.3f}\n" for a, b in rows[:-1])
+                        + "9.0,1.2345678\n")  # fmt: skip
+        gaps = tmp_path / "gaps.csv"
+        gaps.write_text("a,b\n1,2\n3,4\n5,6\n7,8\n9,\n,NA\n11,12\n")
+        dst = tmp_path / "out.szplt"
+
+        def dtypes(path: Path) -> list[np.dtype]:
+            assert tectable([str(path), "-o", str(dst), "-f"]) == 0
+            with tecio.open(str(dst), "r") as reader:
+                return [reader.zones[0].get_array(n).dtype for n in reader.variables]
+
+        assert dtypes(src) == [np.float32, np.float32]
+        assert dtypes(late) == [np.float32, np.float64]
+
+        def column(values: list[str]) -> Path:
+            path = tmp_path / "column.csv"
+            path.write_text("a,b\n" + "".join(f"{v},{v}\n" for v in values))
+            return path
+
+        whole = [str(k) for k in range(11)]
+        assert dtypes(column(whole)) == [np.uint8, np.uint8]
+        assert dtypes(column([*whole, "-1"])) == [np.int16, np.int16]  # late negative
+        assert dtypes(column([*whole, "70000"])) == [np.int32, np.int32]  # late large
+        assert dtypes(column([*whole, "2.5"])) == [np.float32, np.float32]  # late gap
+        assert dtypes(column([*whole, "3e9"])) == [np.float32, np.float32]  # not int32
+
+        dtypes(gaps)
+        _, zones = _read_ordered_zones(dst)
+        np.testing.assert_array_equal(
+            zones[0]["data"]["a"], [1, 3, 5, 7, 9, np.nan, 11]
+        )
+        np.testing.assert_array_equal(
+            zones[0]["data"]["b"], [2, 4, 6, 8, np.nan, np.nan, 12]
+        )
+
+    def test_input_errors(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Bad input or options exit with code 1 and say what is wrong."""
+        dst = tmp_path / "out.szplt"
+
+        def run(text: str, *options: str, name: str = "table.csv") -> str:
+            src = tmp_path / name
+            src.write_text(text)
+            assert tectable([*options, str(src), "-o", str(dst), "-f"]) == 1
+            return capsys.readouterr().err
+
+        assert tectable([str(tmp_path / "ghost.csv"), "-o", str(dst)]) == 1
+        assert "not found" in capsys.readouterr().err
+        assert "no data" in run("# only a comment\n\n")
+        assert "line 3" in run("a,b\n1,2\n3\n4,5\n")
+        assert "no numeric" in run("a,b\nx,y\nz,w\n")
+        assert "no numeric" in run("g,v\nA,1\nB,2\n", "-g", "v")
+        assert "not found" in run("g,v\nA,1\n", "-g", "nope")
+        assert "not found" in run("g,v\nA,1\n", "-g", "G")  # case matters
+        assert "not found" in run("g,v\nA,1\n", "-g", "0")  # no indices
+        assert "no data rows" in run("a,b\n", "--header", "yes")
+        assert "2 columns" in run("a,b\n1,2\n", "-n", "x,y,z")
+        assert "delimiter" in run("a,b\n1,2\n", "-d", "ab")
+
+        assert "quote" in run('a,b\n1,2\n3,"4\n5,6\n')
+
+        monkeypatch.setattr("tecio.cli.tectable._CHUNK_ROWS", 2)
+        text = run("v\n1\n2\n3\nfour\n", "--header", "yes")
+        assert "'v'" in text
+        assert "text" in text
+        assert "line 4: expected 2 fields" in run("a,b\n1,2\n3,4\n5,6,7\n8,9\n")
+        assert "expected 2 fields" in run("a,b\n1,2\n3,4\n5,6,7\n8,9,10\n")
+        monkeypatch.undo()
+
+        src = tmp_path / "ok.csv"
+        src.write_text("a,b\n1,2\n")
+        assert tectable([str(src), "-o", str(tmp_path / "out.txt")]) == 1
+        assert "extension" in capsys.readouterr().err
+        same = tmp_path / "same.dat"
+        same.write_text("a b\n1 2\n")
+        assert tectable([str(same), "-o", str(same)]) == 1
+        assert "overwrite the input" in capsys.readouterr().err
+        stale = tmp_path / "stale.szplt"
+        stale.write_text("stale")
+        assert tectable([str(src), "-o", str(stale)]) == 1
+        assert "--force" in capsys.readouterr().err
+        assert tectable([str(src), "-o", str(stale), "--force"]) == 0
+
+        def failing_open(path: str, mode: str, **kwargs: Any) -> None:
+            Path(path).write_text("partial")
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("tecio.cli.tectable.tecio_open", failing_open)
+        assert tectable([str(src), "-o", str(tmp_path / "half.szplt")]) == 1
+        assert "disk full" in capsys.readouterr().err
+        assert not (tmp_path / "half.szplt").exists()
+        monkeypatch.undo()
+
+        bad = tmp_path / "latin.csv"
+        bad.write_bytes(b"a,b\n\xff,2\n")
+        assert tectable([str(bad), "-o", str(dst), "-f"]) == 1
 
 
 # ======================================================================================
