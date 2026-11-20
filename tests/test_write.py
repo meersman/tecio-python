@@ -296,6 +296,44 @@ class TestWriteIJKZone:
                 cc_var.values.ravel(), cc.ravel(), rtol=_rtol(fmt, cc)
             )
 
+    @pytest.mark.parametrize("dims", [(6,), (5, 4), (5, 1, 4)], ids=["i", "ij", "ik"])
+    def test_write_ordered_cell_centered_lower_dimensions(
+        self, fmt: str, dims: tuple[int, ...], output_path: Callable
+    ) -> None:
+        """Cell-centered data in zones with fewer than three dimensions.
+
+        Demonstrates:
+        - Cell-centered array shape for an I-, IJ- and IK-ordered zone
+        - A nodal variable after the cell-centered one and a second zone still read
+          correctly, PLT pads cell-centered data differently for each dimension count
+        """
+        rng = np.random.default_rng(7)
+        cell = tuple(max(n - 1, 1) for n in dims)
+        a, cc, b = rng.random(dims), rng.random(cell), rng.random(dims)
+
+        path = _path(output_path, fmt, "write_cc_lower_dimensions")
+        with tecio.open(str(path), "w", variables=["a", "cc", "b"]) as w:
+            for scale in (1.0, 2.0):
+                w.write_ordered_zone(
+                    data=[a, cc * scale, b],
+                    value_locations=[
+                        ValueLocation.NODAL,
+                        ValueLocation.CELL_CENTERED,
+                        ValueLocation.NODAL,
+                    ],
+                )
+
+        with tecio.open(str(path), "r") as r:
+            assert r.num_zones == 2
+            for zone, scale in zip(r.zones, (1.0, 2.0), strict=True):
+                assert zone.get_array("cc").size == cc.size
+                np.testing.assert_allclose(
+                    zone.get_array("cc").reshape(cell), cc * scale, rtol=_rtol(fmt, cc)
+                )
+                np.testing.assert_allclose(
+                    zone.get_array("b").reshape(dims), b, rtol=_rtol(fmt, b)
+                )
+
     def test_write_ijk_int_variable(self, fmt: str, output_path: Callable) -> None:
         """Ordered zone with INT32/INT16/BYTE variables.
 

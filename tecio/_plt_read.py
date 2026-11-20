@@ -819,11 +819,13 @@ class _PltParser:
     def _var_value_count(self, meta: _ZoneMeta, var_idx: int) -> int:
         """Return the number of values on disk for variable *var_idx*.
 
-        For cell-centered variables in ORDERED zones the PLT format writes ``IMax * JMax
-        * (KMax - 1)`` values on disk (see Note 5 of the format spec). The significant
-        cell count is ``(I-1) * (J-1) * (K-1)``; the remainder are ghost (zero-padded)
-        values that are trimmed in :meth:`TecplotPltVariableReader.get_values` after
-        reshaping.
+        For cell-centered variables in ORDERED zones the PLT format pads every
+        dimension but the last one with more than one node (see Note 5 of the format
+        spec): ``IMax * JMax * (KMax - 1)`` values on disk for an IJK-ordered zone,
+        ``IMax * (JMax - 1)`` for an IJ-ordered zone and ``IMax - 1`` for an I-ordered
+        zone. The significant cell count is ``(I-1) * (J-1) * (K-1)``; the remainder
+        are ghost (zero-padded) values that are trimmed in
+        :meth:`TecplotPltVariableReader.get_values` after reshaping.
 
         For FE zones, cell-centered variables store exactly one value per element with
         no padding.
@@ -835,10 +837,14 @@ class _PltParser:
             j = max(meta.j_max, 1)
             k = max(meta.k_max, 1)
             if loc == ValueLocation.CELL_CENTERED:
-                # PLT Note 5: IMax * JMax * (KMax - 1) values on disk. Only K is
-                # reduced; I and J retain their full extent as ghost padding in the
-                # Fortran-order layout.
-                return i * j * max(k - 1, 1)
+                # PLT Note 5: only the last dimension with more than one node is
+                # reduced; the dimensions before it retain their full extent as ghost
+                # padding in the Fortran-order layout.
+                if k > 1:
+                    return i * j * (k - 1)
+                if j > 1:
+                    return i * (j - 1)
+                return max(i - 1, 1)
             return i * j * k
         else:
             # FE zones — no ghost padding.
@@ -1260,11 +1266,17 @@ class TecplotPltVariableReader(TecplotVariableReader):
         if full_read and meta.zone_type == ZoneType.ORDERED:
             ni, nj, nk = meta.i_max, meta.j_max, meta.k_max
             if meta.value_locations[self.var_index] == ValueLocation.CELL_CENTERED:
-                # On disk: i * j * (k-1) values in Fortran order. Ghost padding occupies
-                # the last row in I and J after reshape, so reshape to (ni, nj, nk-1)
-                # then slice to (ni-1, nj-1, nk-1) to discard the ghost values and
-                # return only significant cells.
-                data = data.reshape((ni, nj, max(nk - 1, 1)), order="F")
+                # On disk: the padded layout of _var_value_count in Fortran order. Ghost
+                # padding occupies the last row of each padded dimension after reshape,
+                # so reshape to the padded shape then slice to (ni-1, nj-1, nk-1) to
+                # discard the ghost values and return only significant cells.
+                if nk > 1:
+                    padded = (ni, nj, nk - 1)
+                elif nj > 1:
+                    padded = (ni, nj - 1, 1)
+                else:
+                    padded = (max(ni - 1, 1), 1, 1)
+                data = data.reshape(padded, order="F")
                 data = data[: max(ni - 1, 1), : max(nj - 1, 1), :]
             else:
                 shape = (ni, nj, nk)
