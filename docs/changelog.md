@@ -9,19 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+---
 
-- `tectable` console script converts a delimited text table to Tecplot zones
-  with additional flags for filtering or grouping like data into zones.
-
-### Fixed
-
-- The PLT reader sized cell-centered variables of ordered zones as `I*J*(K-1)`
-  values for every zone. TecIO pads every dimension except the last one with
-  more than one node. So the PLT reader did not correctly calculate the number
-  of values to read for cell-centered data in one or two dimension while in
-  three dimensions the correct number of values were read. This bug did not
-  affect SZL or DAT readers.
+```{include} changelog/v0.4.3.md
+```
 
 ---
 
@@ -95,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/meersman/tecio-python/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/meersman/tecio-python/compare/v0.4.3...HEAD
 
 ```{toctree}
 :hidden:
